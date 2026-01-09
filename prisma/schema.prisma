@@ -1,0 +1,237 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SceneStatus {
+  draft
+  generating
+  ready
+  error
+}
+
+enum JobStatus {
+  queued
+  running
+  ready
+  error
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String?
+  email     String?  @unique
+  image     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects  Project[]
+  accounts  Account[]
+  sessions  Session[]
+}
+
+model Project {
+  id            String   @id @default(cuid())
+  userId        String
+  title         String
+  stylePresetId String?
+  transcriptRaw Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User              @relation(fields: [userId], references: [id])
+  stylePreset   StylePreset?      @relation(fields: [stylePresetId], references: [id])
+  audioAsset    AudioAsset?
+  transcript   TranscriptRow[]
+  scenes       Scene[]
+  exports      ExportRender[]
+  characters   CharacterReference[]
+
+  @@index([userId])
+}
+
+model AudioAsset {
+  id             String   @id @default(cuid())
+  projectId      String   @unique
+  originalUrl    String
+  editedUrl      String?
+  durationSec    Float?
+  trimStartSec   Float?
+  trimEndSec     Float?
+  fadeInSec      Float?
+  fadeOutSec     Float?
+  waveformUrl    String?
+  waveformData   Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project        Project  @relation(fields: [projectId], references: [id])
+}
+
+model TranscriptRow {
+  id        String   @id @default(cuid())
+  projectId String
+  tSec      Int
+  text      String
+  words     Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project  @relation(fields: [projectId], references: [id])
+
+  @@unique([projectId, tSec])
+  @@index([projectId])
+}
+
+model Scene {
+  id                 String      @id @default(cuid())
+  projectId          String
+  index              Int
+  startMs            Int
+  endMs              Int
+  transcriptSpanText String
+  focalPoint         String
+  promptText         String
+  stylePresetId      String?
+  characterRefId     String?
+  status             SceneStatus @default(draft)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  project            Project             @relation(fields: [projectId], references: [id])
+  stylePreset        StylePreset?        @relation(fields: [stylePresetId], references: [id])
+  characterRef       CharacterReference? @relation(fields: [characterRefId], references: [id])
+  imageRuns          ImageGenerationRun[]
+  imageCandidates    ImageCandidate[]
+  animationClips     AnimationClip[]
+
+  @@index([projectId])
+}
+
+model ImageGenerationRun {
+  id            String   @id @default(cuid())
+  sceneId       String
+  provider      String
+  providerJobId String
+  status        JobStatus @default(queued)
+  version       Int
+  createdAt     DateTime @default(now())
+
+  scene         Scene    @relation(fields: [sceneId], references: [id])
+  candidates    ImageCandidate[]
+
+  @@index([sceneId])
+}
+
+model ImageCandidate {
+  id            String   @id @default(cuid())
+  sceneId       String
+  runId         String
+  url           String
+  providerJobId String
+  isSelected    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  scene         Scene              @relation(fields: [sceneId], references: [id])
+  run           ImageGenerationRun @relation(fields: [runId], references: [id])
+  animationClips AnimationClip[]
+
+  @@index([sceneId])
+}
+
+model AnimationClip {
+  id              String   @id @default(cuid())
+  sceneId         String
+  imageCandidateId String
+  providerJobId   String
+  url             String
+  durationSec     Float
+  createdAt       DateTime @default(now())
+
+  scene           Scene          @relation(fields: [sceneId], references: [id])
+  imageCandidate  ImageCandidate @relation(fields: [imageCandidateId], references: [id])
+}
+
+model ExportRender {
+  id         String    @id @default(cuid())
+  projectId  String
+  status     JobStatus @default(queued)
+  outputUrl  String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  project    Project   @relation(fields: [projectId], references: [id])
+
+  @@index([projectId])
+}
+
+model StylePreset {
+  id           String   @id @default(cuid())
+  name         String
+  suffixTag    String
+  defaultParams Json?
+  createdAt    DateTime @default(now())
+
+  projects     Project[]
+  scenes       Scene[]
+}
+
+model CharacterReference {
+  id              String   @id @default(cuid())
+  projectId       String
+  name            String
+  imageUrls       Json?
+  providerRefId   String?
+  providerTokens  Json?
+  createdAt       DateTime @default(now())
+
+  project         Project @relation(fields: [projectId], references: [id])
+  scenes          Scene[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
