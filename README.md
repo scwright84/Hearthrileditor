@@ -77,13 +77,26 @@ S3_SECRET_ACCESS_KEY=...
 
 Set `OPENAI_API_KEY` to enable transcription and storyboard generation. Without it, storyboard uses a deterministic fallback, and transcription returns an error.
 
-## Midjourney Adapter
+## Luma Dream Machine
 
-Default provider is `mock` (no external dependency).
+Storyboard stills and animation use the Luma Dream Machine API.
 
-- `MJ_PROVIDER=mock` uses placeholder images + sample video.
-- `MJ_PROVIDER=discord` is a stub; see `lib/midjourney.ts` for TODOs on Discord automation.
-- `MJ_PROVIDER=third-party` uses `MJ_THIRD_PARTY_API_URL` and `MJ_THIRD_PARTY_API_KEY`.
+Required:
+
+```
+LUMA_API_KEY=...
+```
+
+Public asset URLs are required for style refs, headshots, and animation frame0 images.
+
+Recommended options:
+1) Use S3/R2 and set `PUBLIC_ASSET_BASE_URL` to your public bucket base URL.
+2) In dev, run a tunnel (ngrok/cloudflared) and set `PUBLIC_ASSET_BASE_URL` to the tunnel URL so `/public/uploads` is reachable.
+
+Optional:
+- `PUBLIC_ASSET_BASE_URL` - base URL used to serve uploaded assets publicly.
+- `LUMA_CONCURRENCY_LIMIT` - max concurrent Luma create calls (default 3).
+- `LUMA_OMNI_VARIANTS` - number of omni variants to generate (clamped 2–4, default 4).
 
 ## Background Jobs
 

@@ -6,14 +6,14 @@ import ProjectEditor from "./project-editor";
 export default async function ProjectEditPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
   const session = await getAuthSession();
   if (!session?.user?.id) {
     redirect("/login");
   }
 
-  const { id } = params;
+  const { id } = await params;
   const project = await prisma.project.findFirst({
     where: { id, userId: session.user.id },
     include: {
@@ -22,12 +22,25 @@ export default async function ProjectEditPage({
       scenes: {
         orderBy: { index: "asc" },
         include: {
-          imageCandidates: true,
-          animationClips: true,
+          imageCandidates: {
+            where: { run: { isActive: true } },
+            orderBy: { createdAt: "asc" },
+          },
+          animationClips: { orderBy: { createdAt: "asc" } },
         },
       },
-      characters: true,
+      characters: {
+        include: {
+          omniRefs: true,
+          omniVariants: { orderBy: { createdAt: "asc" } },
+        },
+      },
       stylePreset: true,
+      stylePack: {
+        include: {
+          styleRefs: { orderBy: { createdAt: "asc" } },
+        },
+      },
     },
   });
 

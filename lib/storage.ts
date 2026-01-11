@@ -18,6 +18,12 @@ export interface StorageProvider {
   }): Promise<StorageUploadResult>;
 }
 
+const buildPublicUrl = (key: string) => {
+  const base = process.env.PUBLIC_ASSET_BASE_URL?.replace(/\/+$/, "");
+  if (!base) return `/${key}`;
+  return `${base}/${key}`;
+};
+
 class LocalStorageProvider implements StorageProvider {
   async uploadFile({
     data,
@@ -37,7 +43,7 @@ class LocalStorageProvider implements StorageProvider {
     await fs.writeFile(fullPath, data);
     return {
       key,
-      url: `/${key}`,
+      url: buildPublicUrl(key),
     };
   }
 }
@@ -83,11 +89,13 @@ class S3StorageProvider implements StorageProvider {
         ContentType: contentType,
       }),
     );
-    const url = await getSignedUrl(
-      this.client,
-      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
-      { expiresIn: 3600 },
-    );
+    const url = process.env.PUBLIC_ASSET_BASE_URL
+      ? buildPublicUrl(key)
+      : await getSignedUrl(
+          this.client,
+          new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+          { expiresIn: 3600 },
+        );
     return { key, url };
   }
 }

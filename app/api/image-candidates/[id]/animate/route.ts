@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { publishProjectEvent } from "@/lib/events";
-import { getMidjourneyProvider } from "@/lib/midjourney";
+import { createVideoGeneration, mapLumaStateToJobStatus } from "@/lib/lumaClient";
 
 export async function POST(
   _request: Request,
@@ -24,23 +24,41 @@ export async function POST(
   publishProjectEvent(candidate.scene.projectId, { message: "Animating clip" });
 
   try {
-    const provider = getMidjourneyProvider();
-    const result = await provider.animate({
-      imageUrl: candidate.url,
-      motion: "low",
+    if (!candidate.url || candidate.status !== "ready") {
+      return NextResponse.json(
+        { error: "Candidate image missing" },
+        { status: 400 },
+      );
+    }
+
+    const generation = await createVideoGeneration({
+      prompt: candidate.scene.promptText,
+      model: "ray-flash-2",
+      resolution: "720p",
+      duration: "5s",
+      aspect_ratio: "16:9",
+      keyframes: {
+        frame0: { type: "image", url: candidate.url },
+      },
     });
 
+    const status = mapLumaStateToJobStatus(generation.state);
     const clip = await prisma.animationClip.create({
       data: {
         sceneId: candidate.sceneId,
         imageCandidateId: candidate.id,
-        providerJobId: result.jobId,
-        url: result.videoUrl,
-        durationSec: result.durationSec,
+        providerJobId: generation.id,
+        lumaGenerationId: generation.id,
+        url: status === "ready" ? generation.assets?.video ?? null : null,
+        durationSec: 5,
+        resolution: "720p",
+        status,
       },
     });
 
-    publishProjectEvent(candidate.scene.projectId, { message: "Animation ready" });
+    publishProjectEvent(candidate.scene.projectId, {
+      message: status === "ready" ? "Animation ready" : "Animation queued",
+    });
 
     return NextResponse.json(clip);
   } catch (error) {

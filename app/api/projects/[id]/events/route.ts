@@ -4,14 +4,15 @@ import { subscribeProjectEvents } from "@/lib/events";
 
 export async function GET(
   request: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getAuthSession();
   if (!session?.user?.id) {
     return new Response("Unauthorized", { status: 401 });
   }
+  const { id } = await params;
   const project = await prisma.project.findFirst({
-    where: { id: params.id, userId: session.user.id },
+    where: { id, userId: session.user.id },
   });
   if (!project) {
     return new Response("Not found", { status: 404 });
@@ -29,7 +30,7 @@ export async function GET(
 
       send({ message: "connected" });
 
-      const unsubscribe = subscribeProjectEvents(params.id, (payload) => {
+      const unsubscribe = subscribeProjectEvents(id, (payload) => {
         send(payload);
       });
 

@@ -10,19 +10,24 @@ import {
 
 export async function POST(
   _request: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getAuthSession();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { id } = await params;
   const project = await prisma.project.findFirst({
-    where: { id: params.id, userId: session.user.id },
+    where: { id, userId: session.user.id },
     include: {
       transcript: { orderBy: { tSec: "asc" } },
       stylePreset: true,
-      characters: true,
+      characters: {
+        include: {
+          omniRefs: true,
+        },
+      },
       audioAsset: true,
     },
   });
@@ -33,6 +38,26 @@ export async function POST(
 
   if (project.transcript.length === 0) {
     return NextResponse.json({ error: "Transcript missing" }, { status: 400 });
+  }
+
+  if (!project.stylePresetId) {
+    return NextResponse.json(
+      { error: "Style preset required" },
+      { status: 400 },
+    );
+  }
+
+  const missingOmni = project.characters.filter((character) => {
+    const omni = character.omniRefs.find(
+      (ref) => ref.stylePresetId === project.stylePresetId,
+    );
+    return !omni || omni.status !== "ready";
+  });
+  if (missingOmni.length > 0) {
+    return NextResponse.json(
+      { error: "Omni refs required for all characters" },
+      { status: 400 },
+    );
   }
 
   publishProjectEvent(project.id, { message: "Storyboard generating" });

@@ -9,20 +9,24 @@ import { getStorageProvider } from "@/lib/storage";
 
 export async function POST(
   _request: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getAuthSession();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { id } = await params;
   const project = await prisma.project.findFirst({
-    where: { id: params.id, userId: session.user.id },
+    where: { id, userId: session.user.id },
     include: {
       audioAsset: true,
       scenes: {
         orderBy: { index: "asc" },
-        include: { imageCandidates: true, animationClips: true },
+        include: {
+          imageCandidates: { where: { run: { isActive: true } } },
+          animationClips: true,
+        },
       },
     },
   });
@@ -40,9 +44,15 @@ export async function POST(
   publishProjectEvent(project.id, { message: "Render started" });
 
   const scenes = project.scenes.map((scene) => {
-    const selected = scene.imageCandidates.find((item) => item.isSelected);
-    const fallback = scene.imageCandidates[0];
-    const clip = scene.animationClips.at(-1);
+    const selected = scene.imageCandidates.find(
+      (item) => item.isSelected && item.status === "ready" && item.url,
+    );
+    const fallback = scene.imageCandidates.find(
+      (item) => item.status === "ready" && item.url,
+    );
+    const clip = [...scene.animationClips]
+      .reverse()
+      .find((item) => item.status === "ready" && item.url);
     return {
       startMs: scene.startMs,
       endMs: scene.endMs,

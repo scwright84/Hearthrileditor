@@ -19,6 +19,12 @@ export interface MidjourneyProvider {
     videoUrl: string;
     durationSec: number;
   }>;
+  generateOmniRef(input: {
+    headshotUrl: string;
+    characterName: string;
+    styleTag: string;
+    stylePresetId: string;
+  }): Promise<{ jobId: string; imageUrl: string; promptText: string }>;
 }
 
 export class MockMidjourneyProvider implements MidjourneyProvider {
@@ -41,6 +47,21 @@ export class MockMidjourneyProvider implements MidjourneyProvider {
       durationSec: 5,
     };
   }
+
+  async generateOmniRef(input: {
+    headshotUrl: string;
+    characterName: string;
+    styleTag: string;
+    stylePresetId: string;
+  }) {
+    const jobId = `mock-${randomUUID()}`;
+    const encoded = encodeURIComponent(input.characterName);
+    return {
+      jobId,
+      imageUrl: `https://placehold.co/512x512?text=Omni+${encoded}`,
+      promptText: `cinematic character reference portrait, clear face, consistent outfit, neutral background, soft studio lighting, sharp focus, no text, no watermark, mid-shot ${input.styleTag}`,
+    };
+  }
 }
 
 export class DiscordAutomationProvider implements MidjourneyProvider {
@@ -57,6 +78,16 @@ export class DiscordAutomationProvider implements MidjourneyProvider {
   }> {
     throw new Error(
       "DiscordAutomationProvider is a stub. Implement: select image from grid, send Animate High/Low, then capture video URL.",
+    );
+  }
+
+  async generateOmniRef(): Promise<{
+    jobId: string;
+    imageUrl: string;
+    promptText: string;
+  }> {
+    throw new Error(
+      "DiscordAutomationProvider is a stub. Implement: send /imagine with omni ref prompt, then capture single image URL.",
     );
   }
 }
@@ -87,6 +118,26 @@ export class ThirdPartyMidjourneyProvider implements MidjourneyProvider {
 
   async animate(input: MidjourneyAnimateInput) {
     const response = await fetch(`${this.baseUrl}/animate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) {
+      throw new Error("Third-party Midjourney provider failed");
+    }
+    return response.json();
+  }
+
+  async generateOmniRef(input: {
+    headshotUrl: string;
+    characterName: string;
+    styleTag: string;
+    stylePresetId: string;
+  }) {
+    const response = await fetch(`${this.baseUrl}/omni-ref`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

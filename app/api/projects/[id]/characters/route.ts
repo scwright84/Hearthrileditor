@@ -4,15 +4,16 @@ import { prisma } from "@/lib/db";
 
 export async function POST(
   request: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getAuthSession();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { id } = await params;
   const project = await prisma.project.findFirst({
-    where: { id: params.id, userId: session.user.id },
+    where: { id, userId: session.user.id },
   });
   if (!project) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -24,10 +25,15 @@ export async function POST(
     return NextResponse.json({ error: "Name required" }, { status: 400 });
   }
 
+  const existingCount = await prisma.characterReference.count({
+    where: { projectId: project.id },
+  });
+
   const character = await prisma.characterReference.create({
     data: {
       projectId: project.id,
       name,
+      lumaIdentityKey: `identity${existingCount}`,
     },
   });
 

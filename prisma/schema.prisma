@@ -28,6 +28,13 @@ enum JobStatus {
   error
 }
 
+enum OmniRefStatus {
+  pending
+  generating
+  ready
+  error
+}
+
 model User {
   id        String   @id @default(cuid())
   name      String?
@@ -37,6 +44,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   projects  Project[]
+  stylePacks StylePack[] @relation("UserStylePacks")
   accounts  Account[]
   sessions  Session[]
 }
@@ -46,17 +54,21 @@ model Project {
   userId        String
   title         String
   stylePresetId String?
+  stylePackId   String?  @unique
   transcriptRaw Json?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   user          User              @relation(fields: [userId], references: [id])
   stylePreset   StylePreset?      @relation(fields: [stylePresetId], references: [id])
+  stylePack     StylePack?        @relation("ProjectActiveStylePack", fields: [stylePackId], references: [id])
   audioAsset    AudioAsset?
   transcript   TranscriptRow[]
   scenes       Scene[]
   exports      ExportRender[]
   characters   CharacterReference[]
+  stylePacks   StylePack[]        @relation("ProjectStylePacks")
+  styleRefs    StyleRef[]
 
   @@index([userId])
 }
@@ -126,6 +138,8 @@ model ImageGenerationRun {
   providerJobId String
   status        JobStatus @default(queued)
   version       Int
+  reason        String?
+  isActive      Boolean @default(true)
   createdAt     DateTime @default(now())
 
   scene         Scene    @relation(fields: [sceneId], references: [id])
@@ -138,9 +152,12 @@ model ImageCandidate {
   id            String   @id @default(cuid())
   sceneId       String
   runId         String
-  url           String
+  url           String?
   providerJobId String
+  lumaGenerationId String?
   isSelected    Boolean  @default(false)
+  status        JobStatus @default(queued)
+  failureReason String?
   createdAt     DateTime @default(now())
 
   scene         Scene              @relation(fields: [sceneId], references: [id])
@@ -155,8 +172,12 @@ model AnimationClip {
   sceneId         String
   imageCandidateId String
   providerJobId   String
-  url             String
-  durationSec     Float
+  lumaGenerationId String?
+  url             String?
+  durationSec     Float?
+  status          JobStatus @default(queued)
+  failureReason   String?
+  resolution      String?
   createdAt       DateTime @default(now())
 
   scene           Scene          @relation(fields: [sceneId], references: [id])
@@ -185,6 +206,8 @@ model StylePreset {
 
   projects     Project[]
   scenes       Scene[]
+  omniRefs     CharacterOmniRef[]
+  omniVariants CharacterOmniVariant[]
 }
 
 model CharacterReference {
@@ -194,10 +217,87 @@ model CharacterReference {
   imageUrls       Json?
   providerRefId   String?
   providerTokens  Json?
+  lumaIdentityKey String?
   createdAt       DateTime @default(now())
 
   project         Project @relation(fields: [projectId], references: [id])
   scenes          Scene[]
+  omniRefs        CharacterOmniRef[]
+  omniVariants    CharacterOmniVariant[]
+}
+
+model CharacterOmniVariant {
+  id              String    @id @default(cuid())
+  characterId     String
+  stylePresetId   String
+  status          JobStatus @default(queued)
+  imageUrl        String?
+  lumaGenerationId String?
+  failureReason   String?
+  isSelected      Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  character       CharacterReference @relation(fields: [characterId], references: [id])
+  stylePreset     StylePreset        @relation(fields: [stylePresetId], references: [id])
+
+  @@index([characterId])
+  @@index([stylePresetId])
+}
+
+model CharacterOmniRef {
+  id            String        @id @default(cuid())
+  characterId   String
+  stylePresetId String
+  status        OmniRefStatus @default(pending)
+  imageUrl      String?
+  providerJobId String?
+  promptText    String?
+  errorMessage  String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  character     CharacterReference @relation(fields: [characterId], references: [id])
+  stylePreset   StylePreset        @relation(fields: [stylePresetId], references: [id])
+
+  @@unique([characterId, stylePresetId])
+  @@index([stylePresetId])
+}
+
+model StylePack {
+  id           String   @id @default(cuid())
+  projectId    String?
+  ownerUserId  String?
+  name         String
+  isGlobal     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  project      Project? @relation("ProjectStylePacks", fields: [projectId], references: [id])
+  activeFor    Project? @relation("ProjectActiveStylePack")
+  owner        User?    @relation("UserStylePacks", fields: [ownerUserId], references: [id])
+  styleRefs    StyleRef[]
+
+  @@index([projectId])
+  @@index([ownerUserId])
+  @@index([isGlobal])
+}
+
+model StyleRef {
+  id         String   @id @default(cuid())
+  projectId  String?
+  stylePackId String?
+  name       String?
+  imageUrl   String
+  weight     Float   @default(0.8)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  project    Project?  @relation(fields: [projectId], references: [id])
+  stylePack  StylePack? @relation(fields: [stylePackId], references: [id])
+
+  @@index([projectId])
+  @@index([stylePackId])
 }
 
 model Account {
