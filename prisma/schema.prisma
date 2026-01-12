@@ -214,6 +214,7 @@ model CharacterReference {
   id              String   @id @default(cuid())
   projectId       String
   name            String
+  descriptionPrompt String?
   imageUrls       Json?
   providerRefId   String?
   providerTokens  Json?
@@ -228,20 +229,27 @@ model CharacterReference {
 
 model CharacterOmniVariant {
   id              String    @id @default(cuid())
+  omniRefId       String?
   characterId     String
   stylePresetId   String
+  index           Int?
   status          JobStatus @default(queued)
   imageUrl        String?
   lumaGenerationId String?
   failureReason   String?
   isSelected      Boolean   @default(false)
+  promptUsed      String?
+  modelUsed       String?
+  aspectRatio     String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   character       CharacterReference @relation(fields: [characterId], references: [id])
+  omniRef         CharacterOmniRef?  @relation(fields: [omniRefId], references: [id])
   stylePreset     StylePreset        @relation(fields: [stylePresetId], references: [id])
 
   @@index([characterId])
+  @@index([omniRefId])
   @@index([stylePresetId])
 }
 
@@ -249,6 +257,7 @@ model CharacterOmniRef {
   id            String        @id @default(cuid())
   characterId   String
   stylePresetId String
+  selectedVariantId String?
   status        OmniRefStatus @default(pending)
   imageUrl      String?
   providerJobId String?
@@ -259,6 +268,7 @@ model CharacterOmniRef {
 
   character     CharacterReference @relation(fields: [characterId], references: [id])
   stylePreset   StylePreset        @relation(fields: [stylePresetId], references: [id])
+  variants      CharacterOmniVariant[]
 
   @@unique([characterId, stylePresetId])
   @@index([stylePresetId])

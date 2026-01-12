@@ -98,6 +98,7 @@ type ProjectPayload = {
     id: string;
     name: string;
     imageUrls?: unknown;
+    descriptionPrompt?: string | null;
     omniRefs?: {
       id: string;
       stylePresetId: string;
@@ -108,10 +109,12 @@ type ProjectPayload = {
     omniVariants?: {
       id: string;
       stylePresetId: string;
+      index?: number | null;
       status: "queued" | "running" | "ready" | "error";
       imageUrl?: string | null;
       isSelected: boolean;
       lumaGenerationId?: string | null;
+      failureReason?: string | null;
     }[];
   }[];
 };
@@ -124,9 +127,24 @@ export default function ProjectEditor({
   stylePresets: StylePreset[];
 }) {
   const [current, setCurrent] = useState(project);
+  const [isRenamingProject, setIsRenamingProject] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState(project.title);
   const [globalStylePacks, setGlobalStylePacks] = useState<StylePack[]>([]);
   const [uploading, setUploading] = useState(false);
   const [jobNote, setJobNote] = useState<string | null>(null);
+  const [characterModalOpen, setCharacterModalOpen] = useState(false);
+  const [characterModalId, setCharacterModalId] = useState<string | null>(null);
+  const [characterModalName, setCharacterModalName] = useState("");
+  const [characterModalFile, setCharacterModalFile] = useState<File | null>(null);
+  const [characterModalError, setCharacterModalError] = useState<string | null>(
+    null,
+  );
+  const [characterModalSaving, setCharacterModalSaving] = useState(false);
+  const [editingCharacterId, setEditingCharacterId] = useState<string | null>(
+    null,
+  );
+  const [editingCharacterName, setEditingCharacterName] = useState("");
+  const [promptLoadingId, setPromptLoadingId] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [previewTime, setPreviewTime] = useState(0);
@@ -182,18 +200,20 @@ export default function ProjectEditor({
         }
       });
     });
+    return ids;
+  }, [current.characters, current.scenes]);
+
+  const pendingOmniVariantIds = useMemo(() => {
+    const ids: string[] = [];
     (current.characters ?? []).forEach((character) => {
       (character.omniVariants ?? []).forEach((variant) => {
-        if (
-          variant.lumaGenerationId &&
-          ["queued", "running"].includes(variant.status)
-        ) {
-          ids.push(variant.lumaGenerationId);
+        if (["queued", "running"].includes(variant.status)) {
+          ids.push(variant.id);
         }
       });
     });
     return ids;
-  }, [current.characters, current.scenes]);
+  }, [current.characters]);
 
   useEffect(() => {
     if (pendingGenerationIds.length === 0) return;
@@ -207,6 +227,19 @@ export default function ProjectEditor({
     }, 2500);
     return () => clearInterval(interval);
   }, [pendingGenerationIds.join("|"), refreshProject]);
+
+  useEffect(() => {
+    if (pendingOmniVariantIds.length === 0) return;
+    const interval = setInterval(async () => {
+      await Promise.all(
+        pendingOmniVariantIds.map((id) =>
+          fetch(`/api/omni/variants/${id}/status`).catch(() => null),
+        ),
+      );
+      refreshProject();
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [pendingOmniVariantIds.join("|"), refreshProject]);
 
   const durationSec = current.audioAsset?.durationSec ?? 0;
   const timelineScale = 16;
@@ -262,6 +295,129 @@ export default function ProjectEditor({
     return url;
   };
 
+  const openCharacterModal = (character?: { id: string; name: string }) => {
+    setCharacterModalId(character?.id ?? null);
+    setCharacterModalName(character?.name ?? "");
+    setCharacterModalFile(null);
+    setCharacterModalError(null);
+    setCharacterModalOpen(true);
+  };
+
+  const saveCharacterName = async (characterId: string, rawName: string) => {
+    const value = rawName.trim();
+    if (!value) return;
+    const response = await fetch(`/api/characters/${characterId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: value }),
+    });
+    if (response.ok) {
+      const data = await response.json().catch(() => null);
+      if (data?.name) {
+        setCurrent((prev) => ({
+          ...prev,
+          characters: (prev.characters ?? []).map((item) =>
+            item.id === characterId ? { ...item, name: data.name } : item,
+          ),
+        }));
+      }
+    }
+  };
+
+  const saveCharacterPrompt = async (
+    characterId: string,
+    rawPrompt: string,
+  ) => {
+    const value = rawPrompt.trim();
+    const response = await fetch(`/api/characters/${characterId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ descriptionPrompt: value }),
+    });
+    if (response.ok) {
+      const data = await response.json().catch(() => null);
+      if (data?.descriptionPrompt !== undefined) {
+        setCurrent((prev) => ({
+          ...prev,
+          characters: (prev.characters ?? []).map((item) =>
+            item.id === characterId
+              ? { ...item, descriptionPrompt: data.descriptionPrompt }
+              : item,
+          ),
+        }));
+      }
+    }
+  };
+
+  const generateCharacterPrompt = async (characterId: string) => {
+    setPromptLoadingId(characterId);
+    const response = await fetch(`/api/characters/${characterId}/describe`, {
+      method: "POST",
+    });
+    if (response.ok) {
+      const data = await response.json().catch(() => null);
+      if (data?.descriptionPrompt !== undefined) {
+        setCurrent((prev) => ({
+          ...prev,
+          characters: (prev.characters ?? []).map((item) =>
+            item.id === characterId
+              ? { ...item, descriptionPrompt: data.descriptionPrompt }
+              : item,
+          ),
+        }));
+      }
+    }
+    setPromptLoadingId(null);
+  };
+
+  const handleSaveCharacter = async () => {
+    if (!characterModalFile) {
+      setCharacterModalError("Select a photo to continue.");
+      return;
+    }
+    if (characterModalSaving) return;
+    setCharacterModalSaving(true);
+    setCharacterModalError(null);
+
+    let targetId = characterModalId;
+    try {
+      if (!targetId) {
+        const fallbackName = `Character ${(current.characters ?? []).length + 1}`;
+        const response = await fetch(`/api/projects/${project.id}/characters`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: fallbackName }),
+        });
+        if (!response.ok) {
+          setCharacterModalError("Failed to create character.");
+          return;
+        }
+        const data = await response.json().catch(() => null);
+        if (!data?.id) {
+          setCharacterModalError("Failed to create character.");
+          return;
+        }
+        targetId = data.id;
+      }
+
+      const formData = new FormData();
+      formData.append("file", characterModalFile);
+      await fetch(`/api/characters/${targetId}/headshot`, {
+        method: "POST",
+        body: formData,
+      });
+
+      await refreshProject();
+      setCharacterModalOpen(false);
+      setCharacterModalId(null);
+      setCharacterModalName("");
+      setCharacterModalFile(null);
+      setCharacterModalError(null);
+    } finally {
+      setCharacterModalSaving(false);
+    }
+  };
+
   const previewScenes = useMemo(() => {
     return current.scenes.map((scene) => {
       const selected =
@@ -295,6 +451,15 @@ export default function ProjectEditor({
   const statusLabel = (status: string) => {
     if (status === "ready") return "Ready";
     if (status === "generating") return "Generating...";
+    if (status === "error") return "Error";
+    if (status === "missing-headshot") return "Needs Headshot";
+    if (status === "needs-style") return "Pick Style";
+    return "Needs Omni";
+  };
+
+  const omniStatusLabel = (status: string) => {
+    if (status === "ready") return "Omni Ready";
+    if (status === "generating") return "Generating";
     if (status === "error") return "Error";
     if (status === "missing-headshot") return "Needs Headshot";
     if (status === "needs-style") return "Pick Style";
@@ -363,18 +528,56 @@ export default function ProjectEditor({
             Style Packs
           </Link>
           <div className="mt-2 border-t border-slate-800 pt-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-              Project
-            </p>
-            <p className="mt-2 text-sm font-medium text-slate-100">
-              {current.title}
-            </p>
+            {isRenamingProject ? (
+              <Input
+                value={projectNameDraft}
+                onChange={(event) => setProjectNameDraft(event.target.value)}
+                onBlur={() => setIsRenamingProject(false)}
+                onKeyDown={async (event) => {
+                  if (event.key === "Escape") {
+                    setIsRenamingProject(false);
+                    return;
+                  }
+                  if (event.key !== "Enter") return;
+                  const next = projectNameDraft.trim();
+                  if (!next || next === current.title) {
+                    setIsRenamingProject(false);
+                    return;
+                  }
+                  const response = await fetch(`/api/projects/${project.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ title: next }),
+                  });
+                  if (response.ok) {
+                    const data = await response.json().catch(() => null);
+                    if (data?.title) {
+                      setCurrent((prev) => ({ ...prev, title: data.title }));
+                    }
+                  }
+                  setIsRenamingProject(false);
+                }}
+                autoFocus
+                className="mt-2 h-9 border-slate-800 bg-slate-900/80 text-sm text-slate-100"
+              />
+            ) : (
+              <button
+                type="button"
+                className="mt-2 text-left text-sm font-medium text-slate-100 hover:underline"
+                onClick={() => {
+                  setProjectNameDraft(current.title);
+                  setIsRenamingProject(true);
+                }}
+              >
+                {current.title}
+              </button>
+            )}
             <div className="mt-4 flex flex-col gap-2 text-sm font-medium">
               <Link
                 href={`/projects/${project.id}/edit`}
                 className="text-slate-100 underline underline-offset-4"
               >
-                Characters
+                Project Setup
               </Link>
               <Link
                 href={`/projects/${project.id}/storyboard`}
@@ -391,7 +594,7 @@ export default function ProjectEditor({
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
-                  Characters
+                  Project Setup
                 </p>
                 <h1 className="text-2xl font-semibold tracking-tight text-slate-100">
                   {current.title}
@@ -523,19 +726,92 @@ export default function ProjectEditor({
 
         <Card className="border-0 bg-slate-900/80 shadow-sm">
           <CardHeader>
+            <CardTitle>Cast</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {(current.characters ?? []).length === 0 ? (
+              <p className="text-sm text-slate-400">
+                Add a character to generate an omni reference.
+              </p>
+            ) : (
+              <div className="flex w-full flex-nowrap gap-3 overflow-x-auto pb-1">
+                {(current.characters ?? []).map((character) => {
+                  const omniRef = getOmniRefForStyle(
+                    character,
+                    current.stylePresetId,
+                  );
+                  const omniVariants = (character.omniVariants ?? []).filter(
+                    (variant) => variant.stylePresetId === current.stylePresetId,
+                  );
+                  const selectedVariant =
+                    omniVariants.find(
+                      (variant) => variant.isSelected && variant.imageUrl,
+                    ) ??
+                    omniVariants.find((variant) => variant.imageUrl) ??
+                    null;
+                  const headshot = getCharacterHeadshotUrl(character);
+                  const headshotUrl = headshot
+                    ? displayAssetUrl(headshot) ?? headshot
+                    : null;
+                  const thumbUrl =
+                    selectedVariant?.imageUrl ?? omniRef?.imageUrl ?? headshotUrl;
+                  const status = characterStatusForStyle(
+                    character,
+                    current.stylePresetId,
+                  );
+                  return (
+                    <div
+                      key={character.id}
+                      className="w-[170px] shrink-0 rounded-2xl border border-slate-800 bg-slate-950/60 p-3"
+                    >
+                      <div className="flex h-24 w-full items-center justify-center overflow-hidden rounded-xl bg-slate-800">
+                        {thumbUrl ? (
+                          <img
+                            src={thumbUrl}
+                            alt={character.name}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <span className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                            No image
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <p className="truncate text-sm font-medium text-slate-100">
+                          {character.name}
+                        </p>
+                        <Badge
+                          variant={status === "error" ? "destructive" : "secondary"}
+                          className="text-[10px]"
+                        >
+                          {omniStatusLabel(status)}
+                        </Badge>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-0 bg-slate-900/80 shadow-sm">
+          <CardHeader>
             <CardTitle>Style Pack</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
-              <Button
-                variant="outline"
-                onClick={async () => {
+              <Select
+                value={current.stylePack?.id ?? ""}
+                onValueChange={async (value) => {
+                  if (!value) return;
                   const response = await fetch(
-                    `/api/projects/${project.id}/style-packs`,
+                    `/api/projects/${project.id}/style-packs/use-global`,
                     {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ name: "Style Pack" }),
+                      body: JSON.stringify({ stylePackId: value }),
                     },
                   );
                   if (response.ok) {
@@ -543,178 +819,365 @@ export default function ProjectEditor({
                   }
                 }}
               >
-                New Pack
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                Current pack: {current.stylePack?.name ?? "None"}
-              </span>
-              <label className="inline-flex cursor-pointer items-center rounded-md border border-slate-800 bg-slate-900/80 px-3 py-2 text-sm font-medium text-slate-100 shadow-sm transition hover:bg-slate-900">
-                Click to add more images
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="sr-only"
-                  onChange={async (event) => {
-                    const files = Array.from(event.target.files ?? []);
-                    if (files.length === 0) return;
-                    let packId = current.stylePack?.id;
-                    if (!packId) {
-                      const response = await fetch(
-                        `/api/projects/${project.id}/style-packs`,
-                        {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ name: "Style Pack" }),
-                        },
-                      );
-                      if (response.ok) {
-                        const created = await response.json();
-                        packId = created.id;
-                      }
-                    }
-                    if (!packId) return;
-                    for (const file of files) {
-                      const formData = new FormData();
-                      formData.append("file", file);
-                      formData.append("stylePackId", packId);
-                      await fetch(`/api/projects/${project.id}/style-refs`, {
-                        method: "POST",
-                        body: formData,
-                      });
-                    }
-                    refreshProject();
-                    event.currentTarget.value = "";
-                  }}
-                />
-              </label>
-              <span className="text-xs text-muted-foreground">
-                Upload multiple images into the current pack (public URLs required).
-              </span>
+                <SelectTrigger className="w-[240px]">
+                  <SelectValue placeholder="Select a style pack" />
+                </SelectTrigger>
+                <SelectContent>
+                  {globalStylePacks.map((pack) => (
+                    <SelectItem key={pack.id} value={pack.id}>
+                      {pack.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             {!current.stylePack || current.stylePack.styleRefs.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Add style images to steer the look of generated frames.
+              <p className="text-sm text-slate-400">
+                Choose a style pack to preview its references here.
               </p>
             ) : (
-              <div className="flex flex-wrap gap-3">
+              <div className="flex w-full flex-nowrap gap-3 overflow-x-auto pb-1">
                 {current.stylePack.styleRefs.map((style) => (
                   <div
                     key={style.id}
-                    className="min-w-[180px] rounded-2xl border bg-slate-950/60 p-3"
+                    className="w-[160px] shrink-0 rounded-2xl border border-slate-800 bg-slate-950/60 p-3"
                   >
                     <img
                       src={displayAssetUrl(style.imageUrl) ?? style.imageUrl}
                       alt={style.name ?? "Style reference"}
-                      className="mb-3 h-24 w-full rounded-xl object-cover"
+                      className="h-20 w-full rounded-lg object-cover"
                     />
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between text-xs text-slate-400">
-                        <span>Weight</span>
-                        <span>{style.weight.toFixed(2)}</span>
-                      </div>
-                      <p className="mt-1 text-[11px] text-slate-400">
-                        Higher = closer to this style; lower = weaker influence.
-                      </p>
-                      <input
-                        type="range"
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        value={style.weight}
-                        onChange={async (event) => {
-                          const value = Number(event.target.value);
-                          setCurrent((prev) => ({
-                            ...prev,
-                            styleRefs: prev.styleRefs.map((item) =>
-                              item.id === style.id
-                                ? { ...item, weight: value }
-                                : item,
-                            ),
-                          }));
-                          await fetch(`/api/style-refs/${style.id}`, {
-                            method: "PATCH",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ weight: value }),
-                          });
-                        }}
-                        className="mt-2 w-full"
-                      />
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="mt-2 w-full"
-                      onClick={async () => {
-                        await fetch(`/api/style-refs/${style.id}`, {
-                          method: "DELETE",
-                        });
-                        refreshProject();
-                      }}
-                    >
-                      Remove
-                    </Button>
                   </div>
                 ))}
               </div>
             )}
-            <div className="flex flex-wrap items-center gap-3 pt-2">
-              <Button
-                variant="secondary"
-                disabled={!current.stylePack}
-                onClick={async () => {
-                  if (!current.stylePack) return;
-                  await fetch(`/api/style-packs/${current.stylePack.id}/save-global`, {
-                    method: "POST",
-                  });
-                  const response = await fetch("/api/style-packs/global");
-                  if (response.ok) {
-                    const data = await response.json();
-                    setGlobalStylePacks(Array.isArray(data) ? data : []);
-                  }
-                }}
-              >
-                Save to Library
-              </Button>
-              {globalStylePacks.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    className="h-9 rounded-md border bg-slate-900/80 px-3 text-sm"
-                    defaultValue=""
-                    onChange={async (event) => {
-                      const value = event.target.value;
-                      if (!value) return;
-                      await fetch(
-                        `/api/projects/${project.id}/style-packs/use-global`,
-                        {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ stylePackId: value }),
-                        },
-                      );
-                      event.target.value = "";
-                      refreshProject();
-                    }}
-                  >
-                    <option value="">Load from library...</option>
-                    {globalStylePacks.map((pack) => (
-                      <option key={pack.id} value={pack.id}>
-                        {pack.name}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="text-xs text-slate-400">
-                    Loading clones the library pack into this project.
-                  </span>
-                </div>
-              ) : (
-                <span className="text-xs text-muted-foreground">
-                  No saved styles yet.
-                </span>
-              )}
-            </div>
           </CardContent>
         </Card>
+
+        <Card className="border-0 bg-slate-900/80 shadow-sm">
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle>Characters</CardTitle>
+              <Button variant="secondary" size="sm" onClick={() => openCharacterModal()}>
+                Add character
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {(current.characters ?? []).map((character) => {
+              const omniRef = getOmniRefForStyle(character, current.stylePresetId);
+              const omniVariants = (character.omniVariants ?? []).filter(
+                (variant) => variant.stylePresetId === current.stylePresetId,
+              );
+              const sortedVariants = [...omniVariants].sort(
+                (a, b) => (a.index ?? 0) - (b.index ?? 0),
+              );
+              const selectedVariant =
+                sortedVariants.find(
+                  (variant) => variant.isSelected && variant.imageUrl,
+                ) ??
+                sortedVariants.find((variant) => variant.imageUrl) ??
+                null;
+              const headshot = getCharacterHeadshotUrl(character);
+              const status = characterStatusForStyle(
+                character,
+                current.stylePresetId,
+              );
+              return (
+                <div
+                  key={character.id}
+                  ref={(node) => {
+                    characterRefs.current[character.id] = node;
+                  }}
+                  className="rounded-2xl border bg-slate-950/60 p-4"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    {editingCharacterId === character.id ? (
+                      <Input
+                        value={editingCharacterName}
+                        onChange={(event) => setEditingCharacterName(event.target.value)}
+                        onBlur={async () => {
+                          await saveCharacterName(
+                            character.id,
+                            editingCharacterName,
+                          );
+                          setEditingCharacterId(null);
+                        }}
+                        onKeyDown={async (event) => {
+                          if (event.key === "Escape") {
+                            setEditingCharacterId(null);
+                            return;
+                          }
+                          if (event.key !== "Enter") return;
+                          event.currentTarget.blur();
+                        }}
+                        className="h-9 w-full max-w-[240px] border-slate-800 bg-slate-900/80 text-sm text-slate-100"
+                        autoFocus
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="text-left text-base font-semibold text-slate-200 hover:underline"
+                        onClick={() => {
+                          setEditingCharacterId(character.id);
+                          setEditingCharacterName(character.name);
+                        }}
+                      >
+                        {character.name}
+                      </button>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        className={
+                          character.descriptionPrompt?.trim()
+                            ? "bg-slate-700 text-slate-200 hover:bg-slate-600"
+                            : "bg-orange-500 text-white hover:bg-orange-600"
+                        }
+                        disabled={!headshot || promptLoadingId === character.id}
+                        onClick={() => generateCharacterPrompt(character.id)}
+                      >
+                        {promptLoadingId === character.id
+                          ? "Generating prompt..."
+                          : "Generate Prompt"}
+                      </Button>
+                      <span className="relative inline-flex group">
+                        <Button
+                          className={
+                            character.descriptionPrompt?.trim()
+                              ? "bg-orange-500 text-white hover:bg-orange-600"
+                              : "bg-slate-700 text-slate-200 hover:bg-slate-600"
+                          }
+                          disabled={
+                            !current.stylePresetId ||
+                            !headshot ||
+                            !character.descriptionPrompt?.trim()
+                          }
+                          onClick={async () => {
+                            if (!current.stylePresetId) return;
+                            setOmniProgress(`Generating ${character.name}...`);
+                            const response = await fetch(
+                              `/api/characters/${character.id}/omni/generate`,
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  stylePresetId: current.stylePresetId,
+                                }),
+                              },
+                            );
+                            const payload = await response.json().catch(() => null);
+                            if (!response.ok) {
+                              setOmniProgress(
+                                payload?.error ?? "Omni generation failed",
+                              );
+                              return;
+                            }
+                            setOmniProgress(`Generated ${character.name}`);
+                            refreshProject();
+                          }}
+                        >
+                          Generate Character Reference
+                        </Button>
+                        {!character.descriptionPrompt?.trim() ? (
+                          <span className="pointer-events-none absolute -top-9 right-0 rounded-md border border-slate-700 bg-slate-900/95 px-2 py-1 text-[11px] text-slate-200 opacity-0 transition group-hover:opacity-100">
+                            Generate prompt prior to creating reference
+                          </span>
+                        ) : null}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-6">
+                    <div className="flex items-start gap-6">
+                      <div className="flex flex-col items-start gap-2">
+                        <button
+                          type="button"
+                          className="flex h-40 w-40 items-center justify-center overflow-hidden rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 text-4xl text-slate-300 hover:border-slate-500"
+                          onClick={() =>
+                            openCharacterModal({
+                              id: character.id,
+                              name: character.name,
+                            })
+                          }
+                        >
+                          {headshot ? (
+                            <img
+                              src={displayAssetUrl(headshot) ?? headshot}
+                              alt={`${character.name} headshot`}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <span className="text-3xl font-semibold">+</span>
+                          )}
+                        </button>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                          Headshot
+                        </p>
+                      </div>
+                      <div className="flex flex-col items-start gap-2">
+                        <div className="h-40 w-40 overflow-hidden rounded-2xl bg-slate-800">
+                          {selectedVariant?.imageUrl ? (
+                            <img
+                              src={selectedVariant.imageUrl}
+                              alt={`${character.name} character`}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : null}
+                        </div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                          Character
+                        </p>
+                        {omniRef?.errorMessage ? (
+                          <p className="text-xs text-rose-600">
+                            {omniRef.errorMessage}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                        Variants
+                      </p>
+                      <div className="flex gap-3">
+                        {sortedVariants.map((variant) => (
+                          <button
+                            key={variant.id}
+                            type="button"
+                            className={`relative h-28 w-28 overflow-hidden rounded-2xl border ${
+                              variant.isSelected
+                                ? "border-amber-300"
+                                : "border-slate-800"
+                            } bg-slate-950/60`}
+                            onClick={async () => {
+                              await fetch(
+                                `/api/characters/${character.id}/omni/select`,
+                                {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({
+                                    stylePresetId: current.stylePresetId,
+                                    variantId: variant.id,
+                                  }),
+                                },
+                              );
+                              refreshProject();
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="absolute right-2 top-2 rounded-full bg-slate-950/80 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
+                              onClick={async (event) => {
+                                event.stopPropagation();
+                                await fetch(`/api/omni/variants/${variant.id}`, {
+                                  method: "DELETE",
+                                });
+                                refreshProject();
+                              }}
+                            >
+                              ×
+                            </button>
+                            {variant.imageUrl ? (
+                              <>
+                                <img
+                                  src={variant.imageUrl}
+                                  alt={`${character.name} variant`}
+                                  className="h-full w-full object-cover"
+                                />
+                                <span className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-slate-950/80 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-slate-100">
+                                  Select
+                                </span>
+                              </>
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center px-2 text-center text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                                {variant.status === "error"
+                                  ? (variant.failureReason ?? "Failed")
+                                  : variant.status === "running"
+                                    ? "Dreaming"
+                                    : "Queued"}
+                              </div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                      Reference Prompt
+                    </p>
+                    <textarea
+                      value={character.descriptionPrompt ?? ""}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setCurrent((prev) => ({
+                          ...prev,
+                          characters: (prev.characters ?? []).map((item) =>
+                            item.id === character.id
+                              ? { ...item, descriptionPrompt: value }
+                              : item,
+                          ),
+                        }));
+                      }}
+                      onBlur={(event) => {
+                        saveCharacterPrompt(character.id, event.target.value);
+                      }}
+                      placeholder="Auto-generated prompt will appear here. Edit before generating the character reference."
+                      className="w-full min-h-[90px] rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-100 placeholder:text-slate-500"
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+
+        {characterModalOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/95 p-6 text-slate-100 shadow-xl">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">
+                  {characterModalId ? "Update character" : "Add character"}
+                </h2>
+                <button
+                  type="button"
+                  className="text-slate-400 hover:text-white"
+                  onClick={() => setCharacterModalOpen(false)}
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="mt-4 space-y-3">
+                <Input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    setCharacterModalFile(file);
+                  }}
+                />
+                {characterModalError ? (
+                  <p className="text-xs text-rose-400">{characterModalError}</p>
+                ) : null}
+              </div>
+              <div className="mt-5 flex items-center justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  disabled={characterModalSaving}
+                  onClick={() => setCharacterModalOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveCharacter}
+                  disabled={characterModalSaving}
+                >
+                  {characterModalSaving ? "Saving..." : "Save"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
 
         <Card className="border-0 bg-slate-900/80 shadow-sm">
           <CardHeader>
@@ -754,14 +1217,14 @@ export default function ProjectEditor({
                           />
                         ) : headshot ? (
                           <img
-                            src={headshot}
+                            src={displayAssetUrl(headshot) ?? headshot}
                             alt={character.name}
                             className="h-full w-full object-cover"
                           />
                         ) : null}
                       </div>
                       <div>
-                        <p className="text-sm font-medium text-slate-800">
+                        <p className="text-sm font-medium text-slate-200">
                           {character.name}
                         </p>
                         <Badge variant={status === "error" ? "destructive" : "secondary"}>
@@ -911,185 +1374,7 @@ export default function ProjectEditor({
           </CardContent>
         </Card>
 
-        <Card className="border-0 bg-slate-900/80 shadow-sm">
-          <CardHeader>
-            <CardTitle>Characters</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {(current.characters ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Add characters on the storyboard page.
-              </p>
-            ) : (
-              (current.characters ?? []).map((character) => {
-                const omniRef = getOmniRefForStyle(
-                  character,
-                  current.stylePresetId,
-                );
-                const omniVariants = (character.omniVariants ?? []).filter(
-                  (variant) => variant.stylePresetId === current.stylePresetId,
-                );
-                const headshot = getCharacterHeadshotUrl(character);
-                const status = characterStatusForStyle(
-                  character,
-                  current.stylePresetId,
-                );
-                return (
-                  <div
-                    key={character.id}
-                    ref={(node) => {
-                      characterRefs.current[character.id] = node;
-                    }}
-                    className="rounded-2xl border bg-slate-950/60 p-4"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                      <div>
-                        <p className="text-base font-semibold text-slate-800">
-                          {character.name}
-                        </p>
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                          {statusLabel(status)}
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          variant="secondary"
-                          disabled={!current.stylePresetId || !headshot}
-                          onClick={async () => {
-                            if (!current.stylePresetId) return;
-                            setOmniProgress(`Generating ${character.name}...`);
-                            const response = await fetch(
-                              `/api/characters/${character.id}/generate-omni`,
-                              {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                  stylePresetId: current.stylePresetId,
-                                }),
-                              },
-                            );
-                            const payload = await response.json().catch(() => null);
-                            if (!response.ok) {
-                              setOmniProgress(payload?.error ?? "Omni generation failed");
-                              return;
-                            }
-                            setOmniProgress(`Generated ${character.name}`);
-                            refreshProject();
-                          }}
-                        >
-                          {omniRef ? "Regenerate Omni Ref" : "Generate Omni Ref"}
-                        </Button>
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                          Headshot
-                        </p>
-                        <div className="flex items-center gap-3">
-                          <div className="h-20 w-20 overflow-hidden rounded-xl bg-slate-800">
-                            {headshot ? (
-                              <img
-                                src={headshot}
-                                alt={`${character.name} headshot`}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : null}
-                          </div>
-                          <Input
-                            type="file"
-                            accept="image/*"
-                            onChange={async (event) => {
-                              const file = event.target.files?.[0];
-                              if (!file) return;
-                              const formData = new FormData();
-                              formData.append("file", file);
-                              const response = await fetch(
-                                `/api/characters/${character.id}/headshot`,
-                                { method: "POST", body: formData },
-                              );
-                              if (!response.ok) return;
-                              refreshProject();
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                          Omni Ref (style)
-                        </p>
-                        <div className="h-20 w-20 overflow-hidden rounded-xl bg-slate-800">
-                          {omniRef?.imageUrl ? (
-                            <img
-                              src={omniRef.imageUrl}
-                              alt={`${character.name} omni ref`}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : null}
-                        </div>
-                        {omniRef?.errorMessage ? (
-                          <p className="text-xs text-rose-600">
-                            {omniRef.errorMessage}
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="mt-4 space-y-2">
-                      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                        Omni Variants
-                      </p>
-                      {omniVariants.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          Generate omni refs to see variants.
-                        </p>
-                      ) : (
-                        <div className="flex gap-3 overflow-x-auto pb-2">
-                          {omniVariants.map((variant) => (
-                            <div
-                              key={variant.id}
-                              className="min-w-[160px] rounded-2xl border bg-slate-950/60 p-3"
-                            >
-                              {variant.imageUrl ? (
-                                <img
-                                  src={variant.imageUrl}
-                                  alt={`${character.name} variant`}
-                                  className="mb-2 h-24 w-full rounded-xl object-cover"
-                                />
-                              ) : (
-                                <div className="mb-2 flex h-24 w-full items-center justify-center rounded-xl border border-dashed bg-slate-900/70 text-[10px] uppercase tracking-[0.2em] text-slate-400">
-                                  {variant.status === "error"
-                                    ? "Failed"
-                                    : variant.status === "running"
-                                      ? "Dreaming"
-                                      : "Queued"}
-                                </div>
-                              )}
-                              <Button
-                                size="sm"
-                                variant={variant.isSelected ? "default" : "secondary"}
-                                disabled={variant.status !== "ready" || !variant.imageUrl}
-                                className="w-full"
-                                onClick={async () => {
-                                  await fetch(
-                                    `/api/characters/omni-variants/${variant.id}/select`,
-                                    { method: "POST" },
-                                  );
-                                  refreshProject();
-                                }}
-                              >
-                                {variant.isSelected ? "Selected" : "Select"}
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </CardContent>
-        </Card>
+        
 
         <Card className="border-0 bg-slate-900/80 shadow-sm">
           <CardHeader>

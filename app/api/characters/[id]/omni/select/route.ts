@@ -3,7 +3,7 @@ import { getAuthSession } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getAuthSession();
@@ -11,15 +11,28 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { id } = await params;
+  const { id: characterId } = await params;
+  const body = await request.json().catch(() => null);
+  const stylePresetId = String(body?.stylePresetId || "");
+  const variantId = String(body?.variantId || "");
+
+  if (!stylePresetId || !variantId) {
+    return NextResponse.json(
+      { error: "stylePresetId and variantId are required" },
+      { status: 400 },
+    );
+  }
+
   const variant = await prisma.characterOmniVariant.findFirst({
     where: {
-      id,
+      id: variantId,
+      characterId,
+      stylePresetId,
       character: { project: { userId: session.user.id } },
     },
   });
   if (!variant) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return NextResponse.json({ error: "Variant not found" }, { status: 404 });
   }
   if (!variant.imageUrl) {
     return NextResponse.json(
@@ -28,12 +41,9 @@ export async function POST(
     );
   }
 
-  await prisma.$transaction([
+  const [, , updatedRef] = await prisma.$transaction([
     prisma.characterOmniVariant.updateMany({
-      where: {
-        characterId: variant.characterId,
-        stylePresetId: variant.stylePresetId,
-      },
+      where: { characterId, stylePresetId },
       data: { isSelected: false },
     }),
     prisma.characterOmniVariant.update({
@@ -43,8 +53,8 @@ export async function POST(
     prisma.characterOmniRef.upsert({
       where: {
         characterId_stylePresetId: {
-          characterId: variant.characterId,
-          stylePresetId: variant.stylePresetId,
+          characterId,
+          stylePresetId,
         },
       },
       update: {
@@ -55,8 +65,8 @@ export async function POST(
         errorMessage: null,
       },
       create: {
-        characterId: variant.characterId,
-        stylePresetId: variant.stylePresetId,
+        characterId,
+        stylePresetId,
         status: "ready",
         imageUrl: variant.imageUrl,
         providerJobId: variant.lumaGenerationId,
@@ -65,5 +75,5 @@ export async function POST(
     }),
   ]);
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json(updatedRef);
 }

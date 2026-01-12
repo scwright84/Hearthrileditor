@@ -9,6 +9,7 @@ import {
   mapLumaStateToJobStatus,
 } from "@/lib/lumaClient";
 import { toPublicAssetUrl } from "@/lib/publicAssetUrl";
+import { buildOmniPrompt } from "@/lib/omniPrompt";
 
 export async function POST(request: Request) {
   const session = await getAuthSession();
@@ -54,6 +55,9 @@ export async function POST(request: Request) {
       weight: ref.weight ?? 0.8,
     }))
     .filter((ref): ref is { url: string; weight: number } => Boolean(ref.url));
+  const limitedStyleRefs = styleRefs
+    .sort((a, b) => (b.weight ?? 0.8) - (a.weight ?? 0.8))
+    .slice(0, 1);
   if (packRefs.length > 0 && styleRefs.length === 0) {
     return NextResponse.json(
       { error: "Style references must be publicly accessible. Re-upload." },
@@ -87,9 +91,11 @@ export async function POST(request: Request) {
       continue;
     }
 
-    const promptText = `Character reference of ${character.name}, clear face, consistent outfit, neutral background, studio lighting, high detail.`;
+    const promptText =
+      character.descriptionPrompt?.trim() ||
+      buildOmniPrompt(character.name, undefined);
 
-    await prisma.characterOmniRef.upsert({
+    const omniRef = await prisma.characterOmniRef.upsert({
       where: {
         characterId_stylePresetId: {
           characterId: character.id,
@@ -131,24 +137,31 @@ export async function POST(request: Request) {
 
       const variantCount = getOmniVariantCount();
       const variants = await Promise.all(
-        Array.from({ length: variantCount }).map(async () => {
+        Array.from({ length: variantCount }).map(async (_value, index) => {
+          const modelUsed = "photon-flash-1";
+          const aspectRatio = "3:4";
           const generation = await createImageGeneration({
             prompt: promptText,
-            model: "photon-flash-1",
-            aspect_ratio: "16:9",
-            style_ref: styleRefs.length ? styleRefs : undefined,
+            model: modelUsed,
+            aspect_ratio: aspectRatio,
+            style_ref: limitedStyleRefs.length ? limitedStyleRefs : undefined,
             character_ref: {
               [identityKey]: { images: publicHeadshots },
             },
           });
           const status = mapLumaStateToJobStatus(generation.state);
           return prisma.characterOmniVariant.create({
-            data: {
-              characterId: character.id,
-              stylePresetId,
-              status,
-              imageUrl: status === "ready" ? generation.assets?.image ?? null : null,
-              lumaGenerationId: generation.id,
+          data: {
+            characterId: character.id,
+            stylePresetId,
+            omniRefId: omniRef.id,
+            index,
+            status,
+            imageUrl: status === "ready" ? generation.assets?.image ?? null : null,
+            lumaGenerationId: generation.id,
+            promptUsed: promptText,
+              modelUsed,
+              aspectRatio,
             },
           });
         }),

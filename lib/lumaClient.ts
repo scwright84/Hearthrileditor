@@ -55,11 +55,7 @@ const lumaLimit = createLimiter(
   Number(process.env.LUMA_CONCURRENCY_LIMIT ?? 3),
 );
 
-export const getOmniVariantCount = () => {
-  const raw = Number(process.env.LUMA_OMNI_VARIANTS ?? 4);
-  if (!Number.isFinite(raw)) return 4;
-  return Math.min(4, Math.max(2, Math.round(raw)));
-};
+export const getOmniVariantCount = () => 4;
 
 const assertLumaApiKey = () => {
   if (!process.env.LUMA_API_KEY) {
@@ -72,6 +68,8 @@ const lumaFetch = async <T>(
   options: { method?: string; body?: unknown } = {},
 ): Promise<T> => {
   assertLumaApiKey();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
   const response = await fetch(`${LUMA_BASE_URL}${path}`, {
     method: options.method ?? "GET",
     headers: {
@@ -79,7 +77,8 @@ const lumaFetch = async <T>(
       authorization: `Bearer ${process.env.LUMA_API_KEY}`,
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeout));
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(`Luma API error (${response.status}): ${text || "Unknown"}`);
