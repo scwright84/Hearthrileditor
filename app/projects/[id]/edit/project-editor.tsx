@@ -13,7 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import WaveformEditor from "@/components/audio/waveform-editor";
 import {
   characterStatusForStyle,
   getCharacterHeadshotUrl,
@@ -73,17 +72,13 @@ type StylePreset = {
   suffixTag: string;
 };
 
-type StyleRef = {
+type AnimationStyle = {
   id: string;
-  name?: string | null;
-  imageUrl: string;
-  weight: number;
-};
-
-type StylePack = {
-  id: string;
-  name: string;
-  styleRefs: StyleRef[];
+  brandedName: string;
+  description: string;
+  mjStyleModifier?: string | null;
+  referenceImageUrl?: string | null;
+  stylePrompt?: string | null;
 };
 
 type ProjectPayload = {
@@ -93,11 +88,12 @@ type ProjectPayload = {
   audioAsset?: AudioAsset | null;
   transcript: TranscriptRow[];
   scenes: Scene[];
-  stylePack?: StylePack | null;
+  animationStyle?: AnimationStyle | null;
   characters?: {
     id: string;
     name: string;
     imageUrls?: unknown;
+    safeHeadshotUrl?: string | null;
     descriptionPrompt?: string | null;
     omniRefs?: {
       id: string;
@@ -129,9 +125,12 @@ export default function ProjectEditor({
   const [current, setCurrent] = useState(project);
   const [isRenamingProject, setIsRenamingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState(project.title);
-  const [globalStylePacks, setGlobalStylePacks] = useState<StylePack[]>([]);
+  const [animationStyles, setAnimationStyles] = useState<AnimationStyle[]>([]);
   const [uploading, setUploading] = useState(false);
   const [jobNote, setJobNote] = useState<string | null>(null);
+  const [omniVariantStates, setOmniVariantStates] = useState<
+    Record<string, { state?: string | null; queuedForSec?: number | null }>
+  >({});
   const [characterModalOpen, setCharacterModalOpen] = useState(false);
   const [characterModalId, setCharacterModalId] = useState<string | null>(null);
   const [characterModalName, setCharacterModalName] = useState("");
@@ -149,9 +148,19 @@ export default function ProjectEditor({
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [previewTime, setPreviewTime] = useState(0);
   const [omniProgress, setOmniProgress] = useState<string | null>(null);
+  const [showAnimationStylePicker, setShowAnimationStylePicker] = useState(false);
+  const [eventsEnabled, setEventsEnabled] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem("hr_events_enabled") !== "false";
+  });
+  const [variantScrollState, setVariantScrollState] = useState<
+    Record<string, { canLeft: boolean; canRight: boolean }>
+  >({});
+  const variantUploadRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const characterRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const variantScrollerRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const refreshProject = useCallback(async () => {
     const response = await fetch(`/api/projects/${project.id}`);
@@ -161,6 +170,16 @@ export default function ProjectEditor({
   }, [project.id]);
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        "hr_events_enabled",
+        eventsEnabled ? "true" : "false",
+      );
+    }
+  }, [eventsEnabled]);
+
+  useEffect(() => {
+    if (!eventsEnabled) return;
     const source = new EventSource(`/api/projects/${project.id}/events`);
     source.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -171,16 +190,16 @@ export default function ProjectEditor({
     };
     source.onerror = () => source.close();
     return () => source.close();
-  }, [project.id, refreshProject]);
+  }, [eventsEnabled, project.id, refreshProject]);
 
   useEffect(() => {
-    const loadGlobal = async () => {
-      const response = await fetch("/api/style-packs/global");
+    const loadAnimationStyles = async () => {
+      const response = await fetch("/api/animation-styles");
       if (!response.ok) return;
       const data = await response.json();
-      setGlobalStylePacks(Array.isArray(data) ? data : []);
+      setAnimationStyles(Array.isArray(data) ? data : []);
     };
-    loadGlobal();
+    loadAnimationStyles();
   }, []);
 
   const pendingGenerationIds = useMemo(() => {
@@ -231,13 +250,36 @@ export default function ProjectEditor({
   useEffect(() => {
     if (pendingOmniVariantIds.length === 0) return;
     const interval = setInterval(async () => {
-      await Promise.all(
-        pendingOmniVariantIds.map((id) =>
-          fetch(`/api/omni/variants/${id}/status`).catch(() => null),
-        ),
+      const results = await Promise.all(
+        pendingOmniVariantIds.map(async (id) => {
+          try {
+            const response = await fetch(`/api/omni/variants/${id}/status`);
+            if (!response.ok) return null;
+            return (await response.json()) as {
+              id?: string;
+              debugState?: string | null;
+              debugQueuedForSec?: number | null;
+            };
+          } catch {
+            return null;
+          }
+        }),
       );
+      setOmniVariantStates((prev) => {
+        const next = { ...prev };
+        results.forEach((result) => {
+          if (!result?.id) return;
+          if ("debugState" in result) {
+            next[result.id] = {
+              state: result.debugState ?? null,
+              queuedForSec: result.debugQueuedForSec ?? null,
+            };
+          }
+        });
+        return next;
+      });
       refreshProject();
-    }, 2500);
+    }, 5000);
     return () => clearInterval(interval);
   }, [pendingOmniVariantIds.join("|"), refreshProject]);
 
@@ -295,12 +337,91 @@ export default function ProjectEditor({
     return url;
   };
 
+  const createSafeHeadshotBlob = async (file: File): Promise<Blob> => {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("Failed to load image"));
+        img.src = objectUrl;
+      });
+      const canvas = document.createElement("canvas");
+      const size = 512;
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Canvas unavailable");
+      }
+
+      const scale = Math.max(size / image.width, size / image.height);
+      const backgroundWidth = image.width * scale;
+      const backgroundHeight = image.height * scale;
+      const backgroundX = (size - backgroundWidth) / 2;
+      const backgroundY = (size - backgroundHeight) / 2;
+      ctx.filter = "blur(12px)";
+      ctx.drawImage(
+        image,
+        backgroundX,
+        backgroundY,
+        backgroundWidth,
+        backgroundHeight,
+      );
+      ctx.filter = "none";
+
+      const cropSize = Math.min(image.width, image.height);
+      const cropX = (image.width - cropSize) / 2;
+      const cropY = (image.height - cropSize) / 2;
+      const inset = 48;
+      const target = size - inset * 2;
+      ctx.drawImage(
+        image,
+        cropX,
+        cropY,
+        cropSize,
+        cropSize,
+        inset,
+        inset,
+        target,
+        target,
+      );
+
+      return await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Failed to encode image"));
+        }, "image/jpeg", 0.9);
+      });
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+
   const openCharacterModal = (character?: { id: string; name: string }) => {
     setCharacterModalId(character?.id ?? null);
     setCharacterModalName(character?.name ?? "");
     setCharacterModalFile(null);
     setCharacterModalError(null);
     setCharacterModalOpen(true);
+  };
+
+  const selectAnimationStyle = async (value: string) => {
+    const response = await fetch(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ animationStyleId: value }),
+    });
+    if (response.ok) {
+      const updated = await response.json();
+      const selected =
+        animationStyles.find((item) => item.id === updated.animationStyleId) ??
+        null;
+      setCurrent((prev) => ({
+        ...prev,
+        animationStyle: selected,
+      }));
+    }
   };
 
   const saveCharacterName = async (characterId: string, rawName: string) => {
@@ -349,7 +470,30 @@ export default function ProjectEditor({
     }
   };
 
+  const updateVariantScrollState = (characterId: string) => {
+    const node = variantScrollerRefs.current[characterId];
+    if (!node) return;
+    const canLeft = node.scrollLeft > 4;
+    const canRight = node.scrollLeft + node.clientWidth < node.scrollWidth - 4;
+    setVariantScrollState((prev) => ({
+      ...prev,
+      [characterId]: { canLeft, canRight },
+    }));
+  };
+
+  useEffect(() => {
+    (current.characters ?? []).forEach((character) => {
+      updateVariantScrollState(character.id);
+    });
+  }, [current.characters, current.stylePresetId]);
+
   const generateCharacterPrompt = async (characterId: string) => {
+    setCurrent((prev) => ({
+      ...prev,
+      characters: (prev.characters ?? []).map((item) =>
+        item.id === characterId ? { ...item, descriptionPrompt: "" } : item,
+      ),
+    }));
     setPromptLoadingId(characterId);
     const response = await fetch(`/api/characters/${characterId}/describe`, {
       method: "POST",
@@ -511,7 +655,7 @@ export default function ProjectEditor({
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#0f172a,_#020617_60%,_#020617_100%)] text-slate-100">
       <div className="mx-auto flex w-full max-w-6xl gap-8 px-6 py-14">
-        <aside className="hidden w-56 shrink-0 flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-5 sm:flex">
+        <aside className="sticky top-6 hidden h-fit w-56 shrink-0 flex-col gap-4 self-start rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-5 sm:flex">
           <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
             Hearthril
           </p>
@@ -522,10 +666,10 @@ export default function ProjectEditor({
             Projects
           </Link>
           <Link
-            href="/style-packs"
+            href="/animation-styles"
             className="text-sm font-medium text-slate-300 hover:text-white"
           >
-            Style Packs
+            Animation Styles
           </Link>
           <div className="mt-2 border-t border-slate-800 pt-4">
             {isRenamingProject ? (
@@ -583,7 +727,7 @@ export default function ProjectEditor({
                 href={`/projects/${project.id}/storyboard`}
                 className="text-slate-300 hover:text-white"
               >
-                Storyboard
+                Editor
               </Link>
             </div>
           </div>
@@ -601,6 +745,13 @@ export default function ProjectEditor({
                 </h1>
               </div>
               <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setEventsEnabled((prev) => !prev)}
+                >
+                  Live Updates: {eventsEnabled ? "On" : "Off"}
+                </Button>
                 <Button
                   variant="outline"
                   disabled={!allScenesSelected}
@@ -664,8 +815,8 @@ export default function ProjectEditor({
                           projectId: project.id,
                           stylePresetId: current.stylePresetId,
                         }),
-                      },
-                    );
+                    },
+                  );
                     const payload = await response.json().catch(() => null);
                     if (!response.ok) {
                       setOmniProgress(payload?.error ?? "Omni generation failed");
@@ -723,6 +874,69 @@ export default function ProjectEditor({
             </div>
           ) : null}
           </header>
+
+        <Card className="border-0 bg-slate-900/80 shadow-sm">
+          <CardHeader>
+            <CardTitle>Audio Upload</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap items-center gap-4">
+              <Input
+                type="file"
+                accept="audio/*"
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  setUploading(true);
+                  const formData = new FormData();
+                  formData.append("file", file);
+                  const response = await fetch(
+                    `/api/projects/${project.id}/audio`,
+                    { method: "POST", body: formData },
+                  );
+                  setUploading(false);
+                  if (!response.ok) {
+                    setJobNote("Audio upload failed");
+                    return;
+                  }
+                  const data = await response.json();
+                  setCurrent((prev) => ({ ...prev, audioAsset: data }));
+                  setJobNote("Transcribing audio...");
+                  const transcriptResponse = await fetch(
+                    `/api/projects/${project.id}/transcribe`,
+                    { method: "POST" },
+                  );
+                  const transcriptPayload = await transcriptResponse
+                    .json()
+                    .catch(() => null);
+                  if (!transcriptResponse.ok) {
+                    setJobNote(
+                      transcriptPayload?.error ?? "Transcription failed",
+                    );
+                    return;
+                  }
+                  setCurrent((prev) => ({
+                    ...prev,
+                    transcript: transcriptPayload?.rows ?? prev.transcript,
+                  }));
+                  setJobNote("Transcription ready");
+                }}
+              />
+              <Badge variant="secondary">
+                {uploading ? "Uploading..." : "Original audio"}
+              </Badge>
+              <Button asChild>
+                <Link href={`/projects/${project.id}/storyboard`}>
+                  Open Editor →
+                </Link>
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Upload audio to auto-transcribe, then open the audio editor on the
+              storyboard page to trim and cut.
+            </p>
+          </CardContent>
+        </Card>
 
         <Card className="border-0 bg-slate-900/80 shadow-sm">
           <CardHeader>
@@ -798,59 +1012,102 @@ export default function ProjectEditor({
 
         <Card className="border-0 bg-slate-900/80 shadow-sm">
           <CardHeader>
-            <CardTitle>Style Pack</CardTitle>
+            <CardTitle>Animation Style</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex flex-wrap items-center gap-3">
-              <Select
-                value={current.stylePack?.id ?? ""}
-                onValueChange={async (value) => {
-                  if (!value) return;
-                  const response = await fetch(
-                    `/api/projects/${project.id}/style-packs/use-global`,
-                    {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ stylePackId: value }),
-                    },
-                  );
-                  if (response.ok) {
-                    refreshProject();
-                  }
-                }}
+            <div className="flex flex-wrap items-center gap-4">
+              <button
+                type="button"
+                className="flex h-11 w-[280px] items-center justify-between rounded-xl border border-slate-800 bg-slate-950/60 px-4 text-sm text-slate-200"
+                onClick={() => setShowAnimationStylePicker(true)}
               >
-                <SelectTrigger className="w-[240px]">
-                  <SelectValue placeholder="Select a style pack" />
-                </SelectTrigger>
-                <SelectContent>
-                  {globalStylePacks.map((pack) => (
-                    <SelectItem key={pack.id} value={pack.id}>
-                      {pack.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <span>
+                  {current.animationStyle?.brandedName ||
+                    "Select an animation style"}
+                </span>
+                <span className="text-xs text-slate-500">Choose</span>
+              </button>
             </div>
-            {!current.stylePack || current.stylePack.styleRefs.length === 0 ? (
+            {!current.animationStyle ? (
               <p className="text-sm text-slate-400">
-                Choose a style pack to preview its references here.
+                Choose an animation style to guide prompt wording.
               </p>
             ) : (
-              <div className="flex w-full flex-nowrap gap-3 overflow-x-auto pb-1">
-                {current.stylePack.styleRefs.map((style) => (
-                  <div
-                    key={style.id}
-                    className="w-[160px] shrink-0 rounded-2xl border border-slate-800 bg-slate-950/60 p-3"
-                  >
-                    <img
-                      src={displayAssetUrl(style.imageUrl) ?? style.imageUrl}
-                      alt={style.name ?? "Style reference"}
-                      className="h-20 w-full rounded-lg object-cover"
-                    />
+              <div className="grid gap-4 md:grid-cols-[160px_1fr]">
+                <div className="flex flex-col items-center gap-2">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                    Reference
+                  </p>
+                  <div className="h-28 w-28 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/50">
+                    {current.animationStyle.referenceImageUrl ? (
+                      <img
+                        src={
+                          displayAssetUrl(
+                            current.animationStyle.referenceImageUrl,
+                          ) ?? current.animationStyle.referenceImageUrl
+                        }
+                        alt={current.animationStyle.brandedName}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : null}
                   </div>
-                ))}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                    Generated Reference
+                  </p>
+                  <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4 text-sm text-slate-200">
+                    {current.animationStyle.stylePrompt ||
+                      current.animationStyle.description}
+                  </div>
+                </div>
               </div>
             )}
+            {showAnimationStylePicker ? (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-6 py-10">
+                <div className="flex w-full max-w-4xl max-h-[80vh] flex-col rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-slate-100">
+                      Choose Animation Style
+                    </h3>
+                    <button
+                      type="button"
+                      className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 text-slate-200 hover:bg-slate-800"
+                      onClick={() => setShowAnimationStylePicker(false)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="mt-4 grid flex-1 gap-4 overflow-y-auto pr-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {animationStyles.map((style) => (
+                      <button
+                        key={style.id}
+                        type="button"
+                        className="flex flex-col items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/50 p-3 text-left text-sm text-slate-200 hover:border-slate-600"
+                        onClick={async () => {
+                          await selectAnimationStyle(style.id);
+                          setShowAnimationStylePicker(false);
+                        }}
+                      >
+                        <div className="h-28 w-28 overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+                          {style.referenceImageUrl ? (
+                            <img
+                              src={
+                                displayAssetUrl(style.referenceImageUrl) ??
+                                style.referenceImageUrl
+                              }
+                              alt={style.brandedName}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : null}
+                        </div>
+                        <span className="font-medium">{style.brandedName}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -952,19 +1209,19 @@ export default function ProjectEditor({
                             !headshot ||
                             !character.descriptionPrompt?.trim()
                           }
-                          onClick={async () => {
-                            if (!current.stylePresetId) return;
-                            setOmniProgress(`Generating ${character.name}...`);
-                            const response = await fetch(
-                              `/api/characters/${character.id}/omni/generate`,
-                              {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                  stylePresetId: current.stylePresetId,
-                                }),
-                              },
-                            );
+                        onClick={async () => {
+                          if (!current.stylePresetId) return;
+                          setOmniProgress(`Generating ${character.name}...`);
+                          const response = await fetch(
+                            `/api/characters/${character.id}/omni/generate`,
+                            {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                stylePresetId: current.stylePresetId,
+                              }),
+                            },
+                          );
                             const payload = await response.json().catch(() => null);
                             if (!response.ok) {
                               setOmniProgress(
@@ -1033,76 +1290,13 @@ export default function ProjectEditor({
                         ) : null}
                       </div>
                     </div>
-                    <div className="flex flex-col gap-2">
-                      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                        Variants
-                      </p>
-                      <div className="flex gap-3">
-                        {sortedVariants.map((variant) => (
-                          <button
-                            key={variant.id}
-                            type="button"
-                            className={`relative h-28 w-28 overflow-hidden rounded-2xl border ${
-                              variant.isSelected
-                                ? "border-amber-300"
-                                : "border-slate-800"
-                            } bg-slate-950/60`}
-                            onClick={async () => {
-                              await fetch(
-                                `/api/characters/${character.id}/omni/select`,
-                                {
-                                  method: "POST",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({
-                                    stylePresetId: current.stylePresetId,
-                                    variantId: variant.id,
-                                  }),
-                                },
-                              );
-                              refreshProject();
-                            }}
-                          >
-                            <button
-                              type="button"
-                              className="absolute right-2 top-2 rounded-full bg-slate-950/80 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
-                              onClick={async (event) => {
-                                event.stopPropagation();
-                                await fetch(`/api/omni/variants/${variant.id}`, {
-                                  method: "DELETE",
-                                });
-                                refreshProject();
-                              }}
-                            >
-                              ×
-                            </button>
-                            {variant.imageUrl ? (
-                              <>
-                                <img
-                                  src={variant.imageUrl}
-                                  alt={`${character.name} variant`}
-                                  className="h-full w-full object-cover"
-                                />
-                                <span className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-slate-950/80 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-slate-100">
-                                  Select
-                                </span>
-                              </>
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center px-2 text-center text-[10px] uppercase tracking-[0.2em] text-slate-400">
-                                {variant.status === "error"
-                                  ? (variant.failureReason ?? "Failed")
-                                  : variant.status === "running"
-                                    ? "Dreaming"
-                                    : "Queued"}
-                              </div>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                   </div>
-                  <div className="mt-4 space-y-2">
+                  <div className="mt-4 space-y-2 w-full">
                     <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
                       Reference Prompt
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {`Length: ${(character.descriptionPrompt ?? "").length} chars`}
                     </p>
                     <textarea
                       value={character.descriptionPrompt ?? ""}
@@ -1121,8 +1315,194 @@ export default function ProjectEditor({
                         saveCharacterPrompt(character.id, event.target.value);
                       }}
                       placeholder="Auto-generated prompt will appear here. Edit before generating the character reference."
-                      className="w-full min-h-[90px] rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-100 placeholder:text-slate-500"
+                      className="w-full min-h-[160px] rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-100 placeholder:text-slate-500"
                     />
+                  </div>
+                  <div className="mt-4 flex flex-col gap-2">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                      Variants
+                    </p>
+                    <div className="flex items-center gap-2">
+                      {variantScrollState[character.id]?.canLeft ? (
+                        <button
+                          type="button"
+                          className="flex h-28 w-6 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/40 text-slate-300 hover:border-slate-600 hover:text-white"
+                          onClick={() => {
+                            const node = variantScrollerRefs.current[character.id];
+                            if (node) {
+                              node.scrollBy({ left: -220, behavior: "smooth" });
+                            }
+                          }}
+                          aria-label="Scroll left"
+                        >
+                          <span
+                            aria-hidden
+                            className="h-0 w-0 border-y-[8px] border-y-transparent border-r-[12px] border-r-slate-300"
+                          />
+                        </button>
+                      ) : null}
+                      <div className="w-[640px] max-w-full overflow-hidden">
+                        <div
+                          ref={(node) => {
+                            variantScrollerRefs.current[character.id] = node;
+                          }}
+                          onScroll={() => updateVariantScrollState(character.id)}
+                          className="flex flex-nowrap gap-3 overflow-x-auto pb-1"
+                        >
+                          <div className="relative h-28 w-28 shrink-0">
+                            <input
+                              ref={(node) => {
+                                variantUploadRefs.current[character.id] = node;
+                              }}
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={async (event) => {
+                                const file = event.target.files?.[0];
+                                if (!file || !current.stylePresetId) return;
+                                const formData = new FormData();
+                                formData.append("file", file);
+                                formData.append(
+                                  "stylePresetId",
+                                  current.stylePresetId,
+                                );
+                                const response = await fetch(
+                                  `/api/characters/${character.id}/omni/upload`,
+                                  {
+                                    method: "POST",
+                                    body: formData,
+                                  },
+                                );
+                                if (response.ok) {
+                                  refreshProject();
+                                }
+                                if (variantUploadRefs.current[character.id]) {
+                                  variantUploadRefs.current[character.id]!.value = "";
+                                }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="flex h-full w-full items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 text-3xl text-slate-300 hover:border-slate-500"
+                              onClick={() =>
+                                variantUploadRefs.current[character.id]?.click()
+                              }
+                              disabled={!current.stylePresetId}
+                              aria-label="Upload variant"
+                            >
+                              +
+                            </button>
+                          </div>
+                          {sortedVariants.map((variant) => {
+                            const debugInfo = omniVariantStates[variant.id];
+                            const statusLabel =
+                              variant.status === "error"
+                                ? variant.failureReason ?? "Failed"
+                                : variant.status === "running"
+                                  ? "Dreaming"
+                                  : "Queued";
+                            const queuedSuffix =
+                              debugInfo?.queuedForSec && variant.status === "queued"
+                                ? `, ${debugInfo.queuedForSec}s`
+                                : "";
+                            const statusText = debugInfo?.state
+                              ? `${statusLabel} (${debugInfo.state}${queuedSuffix})`
+                              : debugInfo?.queuedForSec && variant.status === "queued"
+                                ? `${statusLabel} (${debugInfo.queuedForSec}s)`
+                              : statusLabel;
+                            return (
+                              <div
+                                key={variant.id}
+                                role="button"
+                                tabIndex={0}
+                                className={`relative h-28 w-28 shrink-0 overflow-hidden rounded-2xl border ${
+                                  variant.isSelected
+                                    ? "border-amber-300"
+                                    : "border-slate-800"
+                                } bg-slate-950/60 cursor-pointer`}
+                                onClick={async () => {
+                                  await fetch(
+                                    `/api/characters/${character.id}/omni/select`,
+                                    {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({
+                                        stylePresetId: current.stylePresetId,
+                                        variantId: variant.id,
+                                      }),
+                                    },
+                                  );
+                                  refreshProject();
+                                }}
+                                onKeyDown={async (event) => {
+                                  if (event.key !== "Enter") return;
+                                  await fetch(
+                                    `/api/characters/${character.id}/omni/select`,
+                                    {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({
+                                        stylePresetId: current.stylePresetId,
+                                        variantId: variant.id,
+                                      }),
+                                    },
+                                  );
+                                  refreshProject();
+                                }}
+                              >
+                              <button
+                                type="button"
+                                className="absolute right-2 top-2 rounded-full bg-slate-950/80 px-2 py-1 text-[10px] text-slate-200 hover:bg-slate-800"
+                                onClick={async (event) => {
+                                  event.stopPropagation();
+                                  await fetch(`/api/omni/variants/${variant.id}`, {
+                                    method: "DELETE",
+                                  });
+                                  refreshProject();
+                                }}
+                              >
+                                ×
+                              </button>
+                                {variant.imageUrl ? (
+                                  <>
+                                    <img
+                                      src={variant.imageUrl}
+                                      alt={`${character.name} variant`}
+                                      className="h-full w-full object-cover"
+                                    />
+                                    <span className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-slate-950/80 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-slate-100">
+                                      Select
+                                    </span>
+                                  </>
+                                ) : (
+                                  <div className="flex h-full w-full items-center justify-center px-2 text-center text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                                    {statusText}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      {variantScrollState[character.id]?.canRight ? (
+                        <button
+                          type="button"
+                          className="flex h-28 w-6 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/40 text-slate-300 hover:border-slate-600 hover:text-white"
+                          onClick={() => {
+                            const node = variantScrollerRefs.current[character.id];
+                            if (node) {
+                              node.scrollBy({ left: 220, behavior: "smooth" });
+                            }
+                          }}
+                          aria-label="Scroll right"
+                        >
+                          <span
+                            aria-hidden
+                            className="h-0 w-0 border-y-[8px] border-y-transparent border-l-[12px] border-l-slate-300"
+                          />
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               );
@@ -1236,141 +1616,6 @@ export default function ProjectEditor({
                 );
               })}
             </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-0 bg-slate-900/80 shadow-sm">
-          <CardHeader>
-            <CardTitle>Audio Editor</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="flex flex-wrap items-center gap-4">
-              <Input
-                type="file"
-                accept="audio/*"
-                onChange={async (event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  setUploading(true);
-                  const formData = new FormData();
-                  formData.append("file", file);
-                  const response = await fetch(
-                    `/api/projects/${project.id}/audio`,
-                    { method: "POST", body: formData },
-                  );
-                  setUploading(false);
-                  if (response.ok) {
-                    const data = await response.json();
-                    setCurrent((prev) => ({ ...prev, audioAsset: data }));
-                  }
-                }}
-              />
-              <Badge variant="secondary">
-                {uploading ? "Uploading..." : "Original audio"}
-              </Badge>
-              <Button asChild variant="ghost">
-                <Link href={`/projects/${project.id}/storyboard`}>
-                  Edit transcript & storyboard →
-                </Link>
-              </Button>
-            </div>
-            {current.audioAsset ? (
-              <div className="space-y-4">
-                <WaveformEditor
-                  audioUrl={current.audioAsset.originalUrl}
-                  initialDuration={current.audioAsset.durationSec}
-                  trimStartSec={current.audioAsset.trimStartSec}
-                  trimEndSec={current.audioAsset.trimEndSec}
-                  onTrimChange={async (start, end) => {
-                    const response = await fetch(
-                      `/api/projects/${project.id}/audio`,
-                      {
-                        method: "PATCH",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          trimStartSec: start,
-                          trimEndSec: end,
-                          fadeInSec: current.audioAsset?.fadeInSec ?? 0,
-                          fadeOutSec: current.audioAsset?.fadeOutSec ?? 0,
-                        }),
-                      },
-                    );
-                    if (response.ok) {
-                      const data = await response.json();
-                      setCurrent((prev) => ({ ...prev, audioAsset: data }));
-                    }
-                  }}
-                />
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="space-y-2 rounded-2xl border bg-slate-900/70 p-4">
-                    <p className="text-sm font-medium text-slate-200">
-                      Fade in (sec)
-                    </p>
-                    <Input
-                      type="number"
-                      min={0}
-                      step={0.1}
-                      value={current.audioAsset.fadeInSec ?? 0}
-                      onChange={async (event) => {
-                        const value = Number(event.target.value ?? 0);
-                        const response = await fetch(
-                          `/api/projects/${project.id}/audio`,
-                          {
-                            method: "PATCH",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              trimStartSec: current.audioAsset?.trimStartSec ?? 0,
-                              trimEndSec: current.audioAsset?.trimEndSec ?? 0,
-                              fadeInSec: value,
-                              fadeOutSec: current.audioAsset?.fadeOutSec ?? 0,
-                            }),
-                          },
-                        );
-                        if (response.ok) {
-                          const data = await response.json();
-                          setCurrent((prev) => ({ ...prev, audioAsset: data }));
-                        }
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-2 rounded-2xl border bg-slate-900/70 p-4">
-                    <p className="text-sm font-medium text-slate-200">
-                      Fade out (sec)
-                    </p>
-                    <Input
-                      type="number"
-                      min={0}
-                      step={0.1}
-                      value={current.audioAsset.fadeOutSec ?? 0}
-                      onChange={async (event) => {
-                        const value = Number(event.target.value ?? 0);
-                        const response = await fetch(
-                          `/api/projects/${project.id}/audio`,
-                          {
-                            method: "PATCH",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              trimStartSec: current.audioAsset?.trimStartSec ?? 0,
-                              trimEndSec: current.audioAsset?.trimEndSec ?? 0,
-                              fadeInSec: current.audioAsset?.fadeInSec ?? 0,
-                              fadeOutSec: value,
-                            }),
-                          },
-                        );
-                        if (response.ok) {
-                          const data = await response.json();
-                          setCurrent((prev) => ({ ...prev, audioAsset: data }));
-                        }
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Upload audio to see the waveform and trim controls.
-              </p>
-            )}
           </CardContent>
         </Card>
 

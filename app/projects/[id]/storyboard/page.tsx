@@ -41,6 +41,7 @@ export default async function ProjectStoryboardPage({
           styleRefs: { orderBy: { createdAt: "asc" } },
         },
       },
+      animationStyle: true,
     },
   });
 
@@ -48,9 +49,5 @@ export default async function ProjectStoryboardPage({
     redirect("/projects");
   }
 
-  const stylePresets = await prisma.stylePreset.findMany({
-    orderBy: { name: "asc" },
-  });
-
-  return <StoryboardEditor project={project} stylePresets={stylePresets} />;
+  return <StoryboardEditor project={project} />;
 }

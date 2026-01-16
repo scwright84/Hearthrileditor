@@ -55,7 +55,13 @@ const lumaLimit = createLimiter(
   Number(process.env.LUMA_CONCURRENCY_LIMIT ?? 3),
 );
 
-export const getOmniVariantCount = () => 4;
+export const getOmniVariantCount = () => 1;
+
+export const getStyleVariantCount = () => {
+  const raw = Number(process.env.LUMA_STYLE_VARIANTS ?? 3);
+  if (!Number.isFinite(raw)) return 3;
+  return Math.min(4, Math.max(1, Math.round(raw)));
+};
 
 const assertLumaApiKey = () => {
   if (!process.env.LUMA_API_KEY) {
@@ -68,30 +74,71 @@ const lumaFetch = async <T>(
   options: { method?: string; body?: unknown } = {},
 ): Promise<T> => {
   assertLumaApiKey();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
-  const response = await fetch(`${LUMA_BASE_URL}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      "Content-Type": "application/json",
-      authorization: `Bearer ${process.env.LUMA_API_KEY}`,
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-    signal: controller.signal,
-  }).finally(() => clearTimeout(timeout));
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Luma API error (${response.status}): ${text || "Unknown"}`);
+  const method = options.method ?? "GET";
+  const timeoutMs = method === "POST" ? 90000 : 20000;
+  const maxRetries = method === "POST" ? 2 : 0;
+  let attempt = 0;
+
+  while (true) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${LUMA_BASE_URL}${path}`, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          authorization: `Bearer ${process.env.LUMA_API_KEY}`,
+        },
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(
+          `Luma API error (${response.status}): ${text || "Unknown"}`,
+        );
+      }
+      return response.json() as Promise<T>;
+    } catch (error) {
+      const isAbort =
+        error instanceof Error &&
+        (error.name === "AbortError" || error.message.includes("aborted"));
+      if (isAbort && attempt < maxRetries) {
+        attempt += 1;
+        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
-  return response.json() as Promise<T>;
 };
 
 export const mapLumaStateToJobStatus = (state?: string) => {
   if (!state) return "queued";
   const normalized = state.toLowerCase();
-  if (normalized === "completed") return "ready";
-  if (normalized === "failed") return "error";
-  if (normalized === "dreaming" || normalized === "running") return "running";
+  if (
+    normalized === "completed" ||
+    normalized === "succeeded" ||
+    normalized === "success" ||
+    normalized === "finished"
+  ) {
+    return "ready";
+  }
+  if (normalized === "failed" || normalized === "error") return "error";
+  if (
+    normalized === "dreaming" ||
+    normalized === "running" ||
+    normalized === "processing" ||
+    normalized === "in_progress" ||
+    normalized === "starting"
+  ) {
+    return "running";
+  }
+  if (normalized === "queued" || normalized === "pending" || normalized === "submitted") {
+    return "queued";
+  }
   return "queued";
 };
 

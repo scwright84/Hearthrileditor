@@ -4,16 +4,24 @@ import { prisma } from "@/lib/db";
 
 export async function PATCH(
   request: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getAuthSession();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { id } = await params;
   const body = await request.json();
   const styleRef = await prisma.styleRef.findFirst({
-    where: { id: params.id, project: { userId: session.user.id } },
+    where: {
+      id,
+      OR: [
+        { project: { userId: session.user.id } },
+        { stylePack: { ownerUserId: session.user.id } },
+        { stylePack: { project: { userId: session.user.id } } },
+      ],
+    },
   });
   if (!styleRef) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -36,15 +44,23 @@ export async function PATCH(
 
 export async function DELETE(
   _request: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getAuthSession();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const { id } = await params;
   const styleRef = await prisma.styleRef.findFirst({
-    where: { id: params.id, project: { userId: session.user.id } },
+    where: {
+      id,
+      OR: [
+        { project: { userId: session.user.id } },
+        { stylePack: { ownerUserId: session.user.id } },
+        { stylePack: { project: { userId: session.user.id } } },
+      ],
+    },
   });
   if (!styleRef) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });

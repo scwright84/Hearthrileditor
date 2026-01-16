@@ -45,6 +45,7 @@ model User {
 
   projects  Project[]
   stylePacks StylePack[] @relation("UserStylePacks")
+  animationStyles AnimationStyle[] @relation("UserAnimationStyles")
   accounts  Account[]
   sessions  Session[]
 }
@@ -55,6 +56,7 @@ model Project {
   title         String
   stylePresetId String?
   stylePackId   String?  @unique
+  animationStyleId String?
   transcriptRaw Json?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -62,6 +64,7 @@ model Project {
   user          User              @relation(fields: [userId], references: [id])
   stylePreset   StylePreset?      @relation(fields: [stylePresetId], references: [id])
   stylePack     StylePack?        @relation("ProjectActiveStylePack", fields: [stylePackId], references: [id])
+  animationStyle AnimationStyle?  @relation(fields: [animationStyleId], references: [id])
   audioAsset    AudioAsset?
   transcript   TranscriptRow[]
   scenes       Scene[]
@@ -71,6 +74,7 @@ model Project {
   styleRefs    StyleRef[]
 
   @@index([userId])
+  @@index([animationStyleId])
 }
 
 model AudioAsset {
@@ -216,6 +220,7 @@ model CharacterReference {
   name            String
   descriptionPrompt String?
   imageUrls       Json?
+  safeHeadshotUrl String?
   providerRefId   String?
   providerTokens  Json?
   lumaIdentityKey String?
@@ -291,6 +296,48 @@ model StylePack {
   @@index([projectId])
   @@index([ownerUserId])
   @@index([isGlobal])
+}
+
+model AnimationStyle {
+  id           String   @id @default(cuid())
+  ownerUserId  String?
+  internalStyleRef String
+  brandedName  String
+  defaultCategories String[]
+  description  String
+  mjStyleModifier String?
+  referenceImageUrl String?
+  promptInput  String?
+  stylePrompt  String?
+  imageUrl     String?
+  selectedVariantId String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  owner        User?    @relation("UserAnimationStyles", fields: [ownerUserId], references: [id])
+  projects     Project[]
+  variants     AnimationStyleVariant[]
+
+  @@index([ownerUserId])
+}
+
+model AnimationStyleVariant {
+  id             String   @id @default(cuid())
+  animationStyleId String
+  index          Int?
+  status         JobStatus @default(queued)
+  imageUrl       String?
+  lumaGenerationId String?
+  failureReason  String?
+  promptUsed     String?
+  modelUsed      String?
+  aspectRatio    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  animationStyle AnimationStyle @relation(fields: [animationStyleId], references: [id])
+
+  @@index([animationStyleId])
 }
 
 model StyleRef {

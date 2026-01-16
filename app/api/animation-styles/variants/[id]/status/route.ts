@@ -13,11 +13,8 @@ export async function GET(
   }
 
   const { id } = await params;
-  const variant = await prisma.characterOmniVariant.findFirst({
-    where: {
-      id,
-      character: { project: { userId: session.user.id } },
-    },
+  const variant = await prisma.animationStyleVariant.findFirst({
+    where: { id, animationStyle: { ownerUserId: session.user.id } },
   });
   if (!variant) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -29,20 +26,9 @@ export async function GET(
     );
   }
 
-  let generation;
-  try {
-    generation = await getGeneration(variant.lumaGenerationId);
-  } catch (error) {
-    console.error("Omni variant poll failed", {
-      variantId: variant.id,
-      lumaGenerationId: variant.lumaGenerationId,
-      error: (error as Error).message,
-    });
-    return NextResponse.json(variant);
-  }
+  const generation = await getGeneration(variant.lumaGenerationId);
   const status = mapLumaStateToJobStatus(generation.state);
-
-  const updated = await prisma.characterOmniVariant.update({
+  const updated = await prisma.animationStyleVariant.update({
     where: { id: variant.id },
     data: {
       status,
@@ -53,22 +39,15 @@ export async function GET(
     },
   });
 
-  if (status === "error") {
-    console.error("Omni variant failed", {
-      variantId: variant.id,
-      lumaGenerationId: variant.lumaGenerationId,
-      failureReason: generation.failure_reason ?? "Generation failed",
+  if (status === "ready") {
+    await prisma.animationStyle.update({
+      where: { id: variant.animationStyleId },
+      data: {
+        imageUrl: updated.imageUrl,
+        selectedVariantId: updated.id,
+      },
     });
   }
 
-  const queuedForSec =
-    status === "queued"
-      ? Math.round((Date.now() - variant.createdAt.getTime()) / 1000)
-      : null;
-
-  return NextResponse.json({
-    ...updated,
-    debugState: generation.state ?? null,
-    debugQueuedForSec: queuedForSec,
-  });
+  return NextResponse.json(updated);
 }

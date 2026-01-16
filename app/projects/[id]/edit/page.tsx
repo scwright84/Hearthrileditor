@@ -41,6 +41,7 @@ export default async function ProjectEditPage({
           styleRefs: { orderBy: { createdAt: "asc" } },
         },
       },
+      animationStyle: true,
     },
   });
 

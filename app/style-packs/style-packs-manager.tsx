@@ -193,11 +193,9 @@ export default function StylePacksManager() {
         </div>
       </CardHeader>
         <CardContent className="space-y-4">
-        {pack.styleRefs.length === 0 ? (
-          <p className="text-sm text-slate-400">
-            No style images yet.
-          </p>
-        ) : (
+          {pack.styleRefs.length === 0 ? (
+            <p className="text-sm text-slate-400">No style images yet.</p>
+          ) : null}
           <div className="flex items-stretch gap-2">
             {scrollState[pack.id]?.left ? (
               <button
@@ -231,108 +229,108 @@ export default function StylePacksManager() {
                 <span className="flex h-32 w-full items-center justify-center text-5xl font-semibold">
                   +
                 </span>
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="sr-only"
-                onChange={async (event) => {
-                  const files = Array.from(event.target.files ?? []);
-                  if (files.length === 0) return;
-                  const createdRefs: StyleRef[] = [];
-                  for (const file of files) {
-                    const formData = new FormData();
-                    formData.append("file", file);
-                    const response = await fetch(
-                      `/api/style-packs/${pack.id}/style-refs`,
-                      {
-                        method: "POST",
-                        body: formData,
-                      },
-                    );
-                    if (response.ok) {
-                      const payload = await response.json().catch(() => null);
-                      if (payload?.id) {
-                        createdRefs.push(payload);
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="sr-only"
+                  onChange={async (event) => {
+                    const files = Array.from(event.target.files ?? []);
+                    if (files.length === 0) return;
+                    const createdRefs: StyleRef[] = [];
+                    for (const file of files) {
+                      const formData = new FormData();
+                      formData.append("file", file);
+                      const response = await fetch(
+                        `/api/style-packs/${pack.id}/style-refs`,
+                        {
+                          method: "POST",
+                          body: formData,
+                        },
+                      );
+                      if (response.ok) {
+                        const payload = await response.json().catch(() => null);
+                        if (payload?.id) {
+                          createdRefs.push(payload);
+                        }
                       }
                     }
-                  }
-                  if (createdRefs.length > 0) {
-                    setPacks((prev) =>
-                      prev.map((item) =>
-                        item.id === pack.id
-                          ? {
-                              ...item,
-                              styleRefs: [...item.styleRefs, ...createdRefs],
-                            }
-                          : item,
-                      ),
-                    );
-                  }
-                  await load();
-                  event.currentTarget.value = "";
-                }}
-              />
-            </label>
-              {pack.styleRefs.map((style) => (
-                <div
-                  key={style.id}
-                  className="relative w-[160px] shrink-0 rounded-2xl border border-slate-800 bg-slate-950/60 p-3"
-                >
-                <button
-                  type="button"
-                  className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-slate-900/80 text-xs text-slate-200 hover:bg-slate-800"
-                  onClick={async () => {
-                    await fetch(`/api/style-refs/${style.id}`, {
-                      method: "DELETE",
-                    });
-                    await load();
-                  }}
-                  aria-label="Remove style image"
-                >
-                  ×
-                </button>
-                <img
-                  src={displayAssetUrl(style.imageUrl) ?? style.imageUrl}
-                  alt={style.name ?? "Style reference"}
-                  className="mb-2 h-20 w-full rounded-lg object-cover"
-                />
-                <div className="mt-2">
-                  <div className="flex items-center justify-between text-xs text-slate-400">
-                    <span>Weight</span>
-                    <span>{style.weight.toFixed(2)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={style.weight}
-                    onChange={async (event) => {
-                      const value = Number(event.target.value);
+                    if (createdRefs.length > 0) {
                       setPacks((prev) =>
                         prev.map((item) =>
                           item.id === pack.id
                             ? {
                                 ...item,
-                                styleRefs: item.styleRefs.map((ref) =>
-                                  ref.id === style.id
-                                    ? { ...ref, weight: value }
-                                    : ref,
-                                ),
+                                styleRefs: [...item.styleRefs, ...createdRefs],
                               }
                             : item,
                         ),
                       );
+                    }
+                    await load();
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              {pack.styleRefs.map((style) => (
+                <div
+                  key={style.id}
+                  className="relative w-[160px] shrink-0 rounded-2xl border border-slate-800 bg-slate-950/60 p-3"
+                >
+                  <button
+                    type="button"
+                    className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-slate-900/80 text-xs text-slate-200 hover:bg-slate-800"
+                    onClick={async () => {
                       await fetch(`/api/style-refs/${style.id}`, {
-                        method: "PATCH",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ weight: value }),
+                        method: "DELETE",
                       });
+                      await load();
                     }}
-                    className="mt-2 w-full"
+                    aria-label="Remove style image"
+                  >
+                    ×
+                  </button>
+                  <img
+                    src={displayAssetUrl(style.imageUrl) ?? style.imageUrl}
+                    alt={style.name ?? "Style reference"}
+                    className="mb-2 h-20 w-full rounded-lg object-cover"
                   />
-                </div>
+                  <div className="mt-2">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Weight</span>
+                      <span>{style.weight.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={style.weight}
+                      onChange={async (event) => {
+                        const value = Number(event.target.value);
+                        setPacks((prev) =>
+                          prev.map((item) =>
+                            item.id === pack.id
+                              ? {
+                                  ...item,
+                                  styleRefs: item.styleRefs.map((ref) =>
+                                    ref.id === style.id
+                                      ? { ...ref, weight: value }
+                                      : ref,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        );
+                        await fetch(`/api/style-refs/${style.id}`, {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ weight: value }),
+                        });
+                      }}
+                      className="mt-2 w-full"
+                    />
+                  </div>
                 </div>
               ))}
             </div>
@@ -355,7 +353,6 @@ export default function StylePacksManager() {
               </button>
             ) : null}
           </div>
-        )}
         </CardContent>
       </Card>
     );
@@ -364,7 +361,7 @@ export default function StylePacksManager() {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#0f172a,_#020617_60%,_#020617_100%)] text-slate-100">
       <div className="mx-auto flex w-full max-w-6xl gap-8 px-6 py-14">
-        <aside className="hidden w-52 shrink-0 flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-5 sm:flex">
+        <aside className="sticky top-6 hidden h-fit w-52 shrink-0 flex-col gap-4 self-start rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-5 sm:flex">
           <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
             Hearthril
           </p>
@@ -379,6 +376,12 @@ export default function StylePacksManager() {
             className="text-sm font-medium text-slate-100 underline underline-offset-4"
           >
             Style Packs
+          </Link>
+          <Link
+            href="/animation-styles"
+            className="text-sm font-medium text-slate-300 hover:text-white"
+          >
+            Animation Styles
           </Link>
         </aside>
 

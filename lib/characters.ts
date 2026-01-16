@@ -10,6 +10,7 @@ type Character = {
   id: string;
   name: string;
   imageUrls?: unknown;
+  safeHeadshotUrl?: string | null;
   omniRefs?: OmniRef[];
 };
 
@@ -21,6 +22,15 @@ export function getCharacterHeadshotUrl(character: Character): string | null {
 export function getCharacterHeadshotUrls(character: Character): string[] {
   const urls = Array.isArray(character.imageUrls) ? character.imageUrls : [];
   return urls.filter((url): url is string => typeof url === "string");
+}
+
+export function getCharacterSafeHeadshotUrl(
+  character: Character,
+): string | null {
+  if (typeof character.safeHeadshotUrl === "string" && character.safeHeadshotUrl) {
+    return character.safeHeadshotUrl;
+  }
+  return getCharacterHeadshotUrl(character);
 }
 
 export function getOmniRefForStyle(

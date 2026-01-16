@@ -38,6 +38,7 @@ export async function GET(
           styleRefs: { orderBy: { createdAt: "asc" } },
         },
       },
+      animationStyle: true,
     },
   });
 
@@ -73,6 +74,10 @@ export async function PATCH(
         typeof body.stylePresetId === "string"
           ? body.stylePresetId
           : project.stylePresetId,
+      animationStyleId:
+        typeof body.animationStyleId === "string"
+          ? body.animationStyleId || null
+          : project.animationStyleId,
     },
   });
 

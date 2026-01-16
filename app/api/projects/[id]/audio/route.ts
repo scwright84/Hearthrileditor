@@ -89,10 +89,14 @@ export async function PATCH(
   const trimEndSec = Number(body?.trimEndSec ?? 0);
   const fadeInSec = Number(body?.fadeInSec ?? 0);
   const fadeOutSec = Number(body?.fadeOutSec ?? 0);
+  const waveformData =
+    body?.waveformData && typeof body.waveformData === "object"
+      ? body.waveformData
+      : undefined;
 
   const audioAsset = await prisma.audioAsset.update({
     where: { projectId: project.id },
-    data: { trimStartSec, trimEndSec, fadeInSec, fadeOutSec },
+    data: { trimStartSec, trimEndSec, fadeInSec, fadeOutSec, waveformData },
   });
 
   return NextResponse.json(audioAsset);

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAuthSession } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { getCharacterHeadshotUrls } from "@/lib/characters";
 import { publishProjectEvent } from "@/lib/events";
 import {
   createImageGeneration,
@@ -10,6 +9,18 @@ import {
 } from "@/lib/lumaClient";
 import { toPublicAssetUrl } from "@/lib/publicAssetUrl";
 import { buildOmniPrompt } from "@/lib/omniPrompt";
+
+const USE_STYLE_PACK_REFS = process.env.USE_STYLE_PACK_REFS === "true";
+const MAX_OMNI_PROMPT_CHARS = 700;
+const clampPrompt = (prompt: string) => {
+  if (prompt.length <= MAX_OMNI_PROMPT_CHARS) {
+    return { text: prompt, truncated: false };
+  }
+  return {
+    text: `${prompt.slice(0, MAX_OMNI_PROMPT_CHARS).trim()}…`,
+    truncated: true,
+  };
+};
 
 export async function POST(request: Request) {
   const session = await getAuthSession();
@@ -33,6 +44,7 @@ export async function POST(request: Request) {
       characters: true,
       stylePack: { include: { styleRefs: true } },
       styleRefs: true,
+      animationStyle: true,
     },
   });
   if (!project) {
@@ -46,19 +58,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Style preset missing" }, { status: 400 });
   }
 
-  const packRefs =
-    project.stylePack?.styleRefs ??
-    (project.styleRefs.length > 0 ? project.styleRefs : []);
-  const styleRefs = packRefs
-    .map((ref) => ({
-      url: toPublicAssetUrl(ref.imageUrl),
-      weight: ref.weight ?? 0.8,
-    }))
-    .filter((ref): ref is { url: string; weight: number } => Boolean(ref.url));
-  const limitedStyleRefs = styleRefs
-    .sort((a, b) => (b.weight ?? 0.8) - (a.weight ?? 0.8))
-    .slice(0, 1);
-  if (packRefs.length > 0 && styleRefs.length === 0) {
+  const limitedStyleRefs = USE_STYLE_PACK_REFS
+    ? (() => {
+        const packRefs =
+          project.stylePack?.styleRefs ??
+          (project.styleRefs.length > 0 ? project.styleRefs : []);
+        const styleRefs = packRefs
+          .map((ref) => ({
+            url: toPublicAssetUrl(ref.imageUrl),
+            weight: ref.weight ?? 0.8,
+          }))
+          .filter(
+            (ref): ref is { url: string; weight: number } => Boolean(ref.url),
+          );
+        if (packRefs.length > 0 && styleRefs.length === 0) {
+          return "error" as const;
+        }
+        return styleRefs
+          .sort((a, b) => (b.weight ?? 0.8) - (a.weight ?? 0.8))
+          .slice(0, 1);
+      })()
+    : [];
+
+  if (limitedStyleRefs === "error") {
     return NextResponse.json(
       { error: "Style references must be publicly accessible. Re-upload." },
       { status: 400 },
@@ -68,15 +90,11 @@ export async function POST(request: Request) {
   let completed = 0;
   let failed = 0;
   const total = project.characters.filter(
-    (character) => getCharacterHeadshotUrls(character).length > 0,
+    (character) => Boolean(character.descriptionPrompt?.trim()),
   ).length;
 
   for (const character of project.characters) {
-    const headshotUrls = getCharacterHeadshotUrls(character);
-    const publicHeadshots = headshotUrls
-      .map((url) => toPublicAssetUrl(url))
-      .filter((url): url is string => Boolean(url));
-    if (publicHeadshots.length === 0) continue;
+    if (!character.descriptionPrompt?.trim()) continue;
 
     const existing = await prisma.characterOmniRef.findUnique({
       where: {
@@ -91,9 +109,17 @@ export async function POST(request: Request) {
       continue;
     }
 
-    const promptText =
+    const promptTextRaw =
       character.descriptionPrompt?.trim() ||
-      buildOmniPrompt(character.name, undefined);
+      buildOmniPrompt(
+        character.name,
+        undefined,
+        project.animationStyle?.stylePrompt ??
+          project.animationStyle?.description ??
+          null,
+        project.animationStyle?.mjStyleModifier ?? null,
+      );
+    const { text: promptText, truncated } = clampPrompt(promptTextRaw);
 
     const omniRef = await prisma.characterOmniRef.upsert({
       where: {
@@ -119,36 +145,26 @@ export async function POST(request: Request) {
       message: `Generating omni refs ${completed + failed + 1}/${total}...`,
     });
     try {
-      let identityKey = character.lumaIdentityKey;
-      if (!identityKey) {
-        const used = new Set(
-          project.characters
-            .map((item) => item.lumaIdentityKey)
-            .filter((key): key is string => Boolean(key)),
-        );
-        let index = 0;
-        while (used.has(`identity${index}`)) index += 1;
-        identityKey = `identity${index}`;
-        await prisma.characterReference.update({
-          where: { id: character.id },
-          data: { lumaIdentityKey: identityKey },
-        });
-      }
-
       const variantCount = getOmniVariantCount();
+      console.log("Luma omni request", {
+        characterId: character.id,
+        stylePresetId,
+        mode: "prompt-only",
+        styleRefUrls: limitedStyleRefs.map((ref) => ref.url),
+        promptLength: promptText.length,
+        promptTruncated: truncated,
+      });
+
       const variants = await Promise.all(
         Array.from({ length: variantCount }).map(async (_value, index) => {
           const modelUsed = "photon-flash-1";
           const aspectRatio = "3:4";
-          const generation = await createImageGeneration({
-            prompt: promptText,
-            model: modelUsed,
-            aspect_ratio: aspectRatio,
-            style_ref: limitedStyleRefs.length ? limitedStyleRefs : undefined,
-            character_ref: {
-              [identityKey]: { images: publicHeadshots },
-            },
-          });
+        const generation = await createImageGeneration({
+          prompt: promptText,
+          model: modelUsed,
+          aspect_ratio: aspectRatio,
+          style_ref: undefined,
+        });
           const status = mapLumaStateToJobStatus(generation.state);
           return prisma.characterOmniVariant.create({
           data: {

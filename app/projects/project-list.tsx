@@ -21,7 +21,7 @@ export default function ProjectList({ projects }: { projects: Project[] }) {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#0f172a,_#020617_55%,_#020617_100%)] text-slate-100">
       <div className="mx-auto flex w-full max-w-6xl gap-8 px-6 py-14">
-        <aside className="hidden w-52 shrink-0 flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-5 sm:flex">
+        <aside className="sticky top-6 hidden h-fit w-52 shrink-0 flex-col gap-4 self-start rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-5 sm:flex">
           <p className="text-xs uppercase tracking-[0.3em] text-slate-400">
             Hearthril
           </p>
@@ -36,6 +36,12 @@ export default function ProjectList({ projects }: { projects: Project[] }) {
             className="text-sm font-medium text-slate-300 hover:text-slate-100"
           >
             Style Packs
+          </Link>
+          <Link
+            href="/animation-styles"
+            className="text-sm font-medium text-slate-300 hover:text-slate-100"
+          >
+            Animation Styles
           </Link>
         </aside>
 
