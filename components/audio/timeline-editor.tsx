@@ -4,11 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import WaveSurfer from "wavesurfer.js";
 import { Button } from "@/components/ui/button";
 
-type TranscriptRow = {
-  id: string;
-  tSec: number;
-  text: string;
-};
 
 type ClipRange = {
   start: number;
@@ -19,7 +14,8 @@ const EPSILON = 0.01;
 
 const audioBufferToWav = (buffer: AudioBuffer) => {
   const numOfChan = buffer.numberOfChannels;
-  const length = buffer.length * numOfChan * 2 + 44;
+  const bytesPerSample = 4;
+  const length = buffer.length * numOfChan * bytesPerSample + 44;
   const arrayBuffer = new ArrayBuffer(length);
   const view = new DataView(arrayBuffer);
   const sampleRate = buffer.sampleRate;
@@ -39,17 +35,17 @@ const audioBufferToWav = (buffer: AudioBuffer) => {
   writeString("fmt ");
   view.setUint32(offset, 16, true);
   offset += 4;
-  view.setUint16(offset, 1, true);
+  view.setUint16(offset, 3, true);
   offset += 2;
   view.setUint16(offset, numOfChan, true);
   offset += 2;
   view.setUint32(offset, sampleRate, true);
   offset += 4;
-  view.setUint32(offset, sampleRate * numOfChan * 2, true);
+  view.setUint32(offset, sampleRate * numOfChan * bytesPerSample, true);
   offset += 4;
-  view.setUint16(offset, numOfChan * 2, true);
+  view.setUint16(offset, numOfChan * bytesPerSample, true);
   offset += 2;
-  view.setUint16(offset, 16, true);
+  view.setUint16(offset, 32, true);
   offset += 2;
   writeString("data");
   view.setUint32(offset, length - offset - 4, true);
@@ -62,8 +58,8 @@ const audioBufferToWav = (buffer: AudioBuffer) => {
   for (let i = 0; i < buffer.length; i += 1) {
     for (let chan = 0; chan < numOfChan; chan += 1) {
       const sample = Math.max(-1, Math.min(1, channels[chan][i]));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += 2;
+      view.setFloat32(offset, sample, true);
+      offset += 4;
     }
   }
 
@@ -106,11 +102,15 @@ const normalizeClips = (ranges: ClipRange[], duration: number) => {
 
 type TimelineEditorProps = {
   audioUrl: string;
-  transcript: TranscriptRow[];
   initialDuration?: number | null;
   initialClips?: ClipRange[];
   onSaveClips?: (clips: ClipRange[]) => void;
   onTranscribe?: (clips: ClipRange[]) => void;
+  onEditedAudio?: (payload: {
+    blob: Blob;
+    durationSec: number;
+    clips: ClipRange[];
+  }) => void;
   canTranscribe?: boolean;
   isTranscribing?: boolean;
 };
@@ -136,11 +136,11 @@ const formatTimeWithMs = (seconds: number) => {
 
 export default function TimelineEditor({
   audioUrl,
-  transcript,
   initialDuration,
   initialClips,
   onSaveClips,
   onTranscribe,
+  onEditedAudio,
   canTranscribe = false,
   isTranscribing = false,
 }: TimelineEditorProps) {
@@ -153,9 +153,12 @@ export default function TimelineEditor({
   const editedWaveformRef = useRef<HTMLDivElement | null>(null);
   const editedWaveRef = useRef<WaveSurfer | null>(null);
   const decodedBufferRef = useRef<AudioBuffer | null>(null);
+  const decodePromiseRef = useRef<Promise<AudioBuffer | null> | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const buildIdRef = useRef(0);
   const editedBlobUrlRef = useRef<string | null>(null);
+  const editedUploadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editedSignatureRef = useRef<string | null>(null);
   const [duration, setDuration] = useState(initialDuration ?? 0);
   const [currentTime, setCurrentTime] = useState(0);
   const [selectedTime, setSelectedTime] = useState<number | null>(null);
@@ -259,6 +262,32 @@ export default function TimelineEditor({
     }
   }, [audioUrl]);
 
+  const ensureDecodedBuffer = async () => {
+    if (decodedBufferRef.current) {
+      return decodedBufferRef.current;
+    }
+    if (decodePromiseRef.current) {
+      return decodePromiseRef.current;
+    }
+    const ctx = getAudioContext(audioContextRef);
+    if (!ctx || !resolvedAudioUrl) return null;
+    decodePromiseRef.current = (async () => {
+      try {
+        const response = await fetch(resolvedAudioUrl);
+        if (!response.ok) return null;
+        const data = await response.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(data);
+        decodedBufferRef.current = decoded;
+        return decoded;
+      } catch {
+        return null;
+      } finally {
+        decodePromiseRef.current = null;
+      }
+    })();
+    return decodePromiseRef.current;
+  };
+
   useEffect(() => {
     const ctx = getAudioContext(audioContextRef);
     if (!resolvedAudioUrl || !ctx) return;
@@ -291,11 +320,11 @@ export default function TimelineEditor({
       progressColor: "#38bdf8",
       cursorColor: "transparent",
       cursorWidth: 0,
-      height: 140,
+      height: 110,
       backend: "MediaElement",
       minPxPerSec: pxPerSecRef.current,
       fillParent: false,
-      normalize: true,
+      normalize: false,
       interact: true,
       hideScrollbar: true,
       dragToSeek: true,
@@ -305,6 +334,10 @@ export default function TimelineEditor({
       const nextDuration = wave.getDuration();
       setDuration(nextDuration);
       setClips((prev) => normalizeClips(prev, nextDuration));
+      const decoded = wave.getDecodedData?.();
+      if (decoded && !decodedBufferRef.current) {
+        decodedBufferRef.current = decoded;
+      }
       wave.zoom(pxPerSecRef.current);
       const wrapper = wave.getWrapper?.();
       if (wrapper) {
@@ -363,11 +396,11 @@ export default function TimelineEditor({
       progressColor: "#38bdf8",
       cursorColor: "transparent",
       cursorWidth: 0,
-      height: 120,
-      backend: "WebAudio",
+      height: 90,
+      backend: "MediaElement",
       minPxPerSec: pxPerSecRef.current,
       fillParent: false,
-      normalize: true,
+      normalize: false,
       interact: true,
       hideScrollbar: true,
       dragToSeek: true,
@@ -390,55 +423,136 @@ export default function TimelineEditor({
   }, []);
 
   useEffect(() => {
-    const buffer = decodedBufferRef.current;
-    const wave = editedWaveRef.current;
-    if (!buffer || !wave || !displayClips.length) return;
-    const ctx = getAudioContext(audioContextRef);
-    if (!ctx) return;
-    const buildId = ++buildIdRef.current;
-    const nextClips = [...displayClips].sort((a, b) => a.start - b.start);
-    const totalDuration = nextClips.reduce(
-      (sum, clip) => sum + (clip.end - clip.start),
-      0,
-    );
-    if (totalDuration <= 0) return;
-    const sampleRate = buffer.sampleRate;
-    const totalSamples = Math.max(1, Math.floor(totalDuration * sampleRate));
-    const editedBuffer = ctx.createBuffer(
-      buffer.numberOfChannels,
-      totalSamples,
-      sampleRate,
-    );
-    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-      const source = buffer.getChannelData(channel);
-      const target = editedBuffer.getChannelData(channel);
-      let offset = 0;
-      nextClips.forEach((clip) => {
-        const start = Math.floor(clip.start * sampleRate);
-        const end = Math.floor(clip.end * sampleRate);
-        if (end <= start) return;
-        const slice = source.subarray(start, end);
-        target.set(slice, offset);
-        offset += slice.length;
+    let cancelled = false;
+    const run = async () => {
+      const wave = editedWaveRef.current;
+      if (!wave || !displayClips.length) return;
+      const buildId = ++buildIdRef.current;
+      const nextClips = [...displayClips].sort((a, b) => a.start - b.start);
+      const isFullClip =
+        nextClips.length === 1 &&
+        Math.abs(nextClips[0].start) <= EPSILON &&
+        Math.abs(nextClips[0].end - duration) <= EPSILON;
+      const signature = `${isFullClip ? "full" : "cut"}:${duration}:${nextClips
+        .map((clip) => `${clip.start.toFixed(2)}-${clip.end.toFixed(2)}`)
+        .join("|")}`;
+      if (editedSignatureRef.current === signature) {
+        return;
+      }
+      editedSignatureRef.current = signature;
+      if (isFullClip && resolvedAudioUrl) {
+        setEditedDuration(duration);
+        if (editedBlobUrlRef.current) {
+          URL.revokeObjectURL(editedBlobUrlRef.current);
+          editedBlobUrlRef.current = null;
+        }
+        wave.load(resolvedAudioUrl);
+        if (onEditedAudio) {
+          if (editedUploadRef.current) {
+            clearTimeout(editedUploadRef.current);
+          }
+          editedUploadRef.current = setTimeout(async () => {
+            try {
+              const response = await fetch(resolvedAudioUrl);
+              if (!response.ok) return;
+              const blob = await response.blob();
+              onEditedAudio({
+                blob,
+                durationSec: duration,
+                clips: nextClips,
+              });
+            } catch {
+              // Ignore upload failures.
+            }
+          }, 500);
+        }
+        wave.once("ready", () => {
+          wave.zoom(pxPerSecRef.current);
+          const wrapper = wave.getWrapper?.();
+          if (wrapper) {
+            setEditedWaveWidth(wrapper.scrollWidth);
+          }
+        });
+        return;
+      }
+      const buffer = await ensureDecodedBuffer();
+      if (!buffer || cancelled) return;
+      const ctx = getAudioContext(audioContextRef);
+      if (!ctx) return;
+      const totalDuration = nextClips.reduce(
+        (sum, clip) => sum + (clip.end - clip.start),
+        0,
+      );
+      if (totalDuration <= 0) return;
+      const sampleRate = buffer.sampleRate;
+      const totalSamples = Math.max(1, Math.floor(totalDuration * sampleRate));
+      const editedBuffer = ctx.createBuffer(
+        buffer.numberOfChannels,
+        totalSamples,
+        sampleRate,
+      );
+      for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+        const source = buffer.getChannelData(channel);
+        const target = editedBuffer.getChannelData(channel);
+        let offset = 0;
+        nextClips.forEach((clip) => {
+          const start = Math.floor(clip.start * sampleRate);
+          const end = Math.floor(clip.end * sampleRate);
+          if (end <= start) return;
+          const slice = source.subarray(start, end);
+          target.set(slice, offset);
+          offset += slice.length;
+        });
+      }
+      if (buildId !== buildIdRef.current || cancelled) return;
+      setEditedDuration(totalSamples / sampleRate);
+      const blob = audioBufferToWav(editedBuffer);
+      if (editedBlobUrlRef.current) {
+        URL.revokeObjectURL(editedBlobUrlRef.current);
+      }
+      const blobUrl = URL.createObjectURL(blob);
+      editedBlobUrlRef.current = blobUrl;
+      wave.load(blobUrl);
+      if (onEditedAudio) {
+        if (editedUploadRef.current) {
+          clearTimeout(editedUploadRef.current);
+        }
+        editedUploadRef.current = setTimeout(() => {
+          onEditedAudio({
+            blob,
+            durationSec: totalSamples / sampleRate,
+            clips: nextClips,
+          });
+        }, 500);
+      }
+      wave.once("ready", () => {
+        wave.zoom(pxPerSecRef.current);
+        const wrapper = wave.getWrapper?.();
+        if (wrapper) {
+          setEditedWaveWidth(wrapper.scrollWidth);
+        }
       });
-    }
-    if (buildId !== buildIdRef.current) return;
-    setEditedDuration(totalSamples / sampleRate);
-    const blob = audioBufferToWav(editedBuffer);
-    if (editedBlobUrlRef.current) {
-      URL.revokeObjectURL(editedBlobUrlRef.current);
-    }
-    const blobUrl = URL.createObjectURL(blob);
-    editedBlobUrlRef.current = blobUrl;
-    wave.load(blobUrl);
-    wave.once("ready", () => {
-      wave.zoom(pxPerSecRef.current);
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [displayClips, resolvedAudioUrl, duration]);
+
+  useEffect(() => {
+    const wave = editedWaveRef.current;
+    if (!wave) return;
+    if (!editedDuration) return;
+    try {
+      wave.zoom(pxPerSec);
       const wrapper = wave.getWrapper?.();
       if (wrapper) {
         setEditedWaveWidth(wrapper.scrollWidth);
       }
-    });
-  }, [displayClips, resolvedAudioUrl, pxPerSec]);
+    } catch {
+      // Ignore until audio is ready.
+    }
+  }, [pxPerSec, editedDuration]);
 
   useEffect(() => {
     if (!waveRef.current) return;
@@ -457,27 +571,9 @@ export default function TimelineEditor({
     }
   }, [pxPerSec]);
 
-  const transcriptBlocks = useMemo(() => {
-    return transcript.map((row, idx) => {
-      const next = transcript[idx + 1];
-      const end = next ? next.tSec : duration;
-      return {
-        ...row,
-        end: Math.max(row.tSec, end),
-      };
-    });
-  }, [transcript, duration]);
-
-  const activeTranscriptId = useMemo(() => {
-    const active = transcriptBlocks.find(
-      (row) => currentTime >= row.tSec && currentTime < row.end,
-    );
-    return active?.id ?? null;
-  }, [currentTime, transcriptBlocks]);
-
   const applyClipUpdate = (nextClips: ClipRange[]) => {
     if (!isUndoingRef.current) {
-      setHistory((prev) => [...prev, clips]);
+      setHistory((prev) => [...prev, displayClips]);
     }
     setClips(nextClips);
     if (onSaveClips) {
@@ -488,14 +584,13 @@ export default function TimelineEditor({
   const splitAtPlayhead = () => {
     const time = selectedTime ?? currentTime;
     if (!duration) return;
-    let workingClips = normalizeClips(clips, duration);
-    let idx = workingClips.findIndex(
+    const workingClips = displayClips.length
+      ? displayClips
+      : [{ start: 0, end: duration }];
+    const idx = workingClips.findIndex(
       (clip) => time >= clip.start && time <= clip.end,
     );
-    if (idx < 0) {
-      workingClips = [{ start: 0, end: duration }];
-      idx = 0;
-    }
+    if (idx < 0) return;
     const clip = workingClips[idx];
     const splitTime = Math.min(
       clip.end - EPSILON,
@@ -518,12 +613,21 @@ export default function TimelineEditor({
   };
 
   const deleteActiveClip = () => {
-    if (activeClipIndex == null) return;
-    const nextClips = clips.filter((_clip, idx) => idx !== activeClipIndex);
+    let targetIndex = activeClipIndex;
+    if (targetIndex == null && selectedTime != null) {
+      const idx = displayClips.findIndex(
+        (clip) => selectedTime >= clip.start && selectedTime <= clip.end,
+      );
+      if (idx >= 0) {
+        targetIndex = idx;
+      }
+    }
+    if (targetIndex == null) return;
+    const nextClips = displayClips.filter((_clip, idx) => idx !== targetIndex);
     applyClipUpdate(nextClips);
     setActiveClipIndex(null);
     if (waveRef.current) {
-      const fallback = nextClips[activeClipIndex ?? 0]?.start ?? 0;
+      const fallback = nextClips[targetIndex] ? nextClips[targetIndex].start : 0;
       waveRef.current.setTime(fallback);
       setCurrentTime(fallback);
       setSelectedTime(fallback);
@@ -679,13 +783,13 @@ export default function TimelineEditor({
             Undo
           </Button>
           <span className="text-xs text-slate-400">
-            Splits: {Math.max(0, clips.length - 1)}
+            Splits: {Math.max(0, displayClips.length - 1)}
           </span>
           <span className="text-xs text-slate-500">
             Selected: {selectedTime != null ? formatTime(selectedTime) : "—"}
           </span>
           <span className="text-xs text-slate-600">
-            Clips: {clips.length} · Dur: {formatTime(duration)}
+            Clips: {displayClips.length} · Dur: {formatTime(duration)}
           </span>
         </div>
       </div>
@@ -699,11 +803,11 @@ export default function TimelineEditor({
           className="mt-4 w-full max-w-full overflow-x-auto"
         >
           <div
-            className="relative min-h-[360px] max-w-full"
+            className="relative min-h-[190px] max-w-full"
             style={{ width: timelineTotalWidth }}
           >
             <div className="absolute left-0 top-0 h-full w-full">
-              <div className="relative h-10 text-xs text-slate-400">
+              <div className="relative h-8 text-xs text-slate-400">
                 {Array.from(
                   { length: Math.ceil(timelineTotalSec / 5) + 1 },
                   (_, idx) => idx * 5,
@@ -717,39 +821,10 @@ export default function TimelineEditor({
                   </div>
                 ))}
               </div>
-              <div className="mt-3 h-16 rounded-xl border border-dashed border-slate-700/70 bg-slate-950/40 px-3 py-2 text-xs uppercase tracking-[0.2em] text-slate-500">
-                Scenes track (drag media here later)
-              </div>
-              <div className="mt-4 h-16 rounded-xl border border-slate-800 bg-slate-950/50 p-2">
-                <div className="relative h-full">
-                  {transcriptBlocks.map((row) => {
-                    const width = Math.max(
-                      60,
-                      (row.end - row.tSec) * visualPxPerSec,
-                    );
-                    const isActive = row.id === activeTranscriptId;
-                    return (
-                      <div
-                        key={row.id}
-                        className={`absolute top-0 h-full rounded-lg border px-2 py-1 text-xs ${
-                          isActive
-                            ? "border-orange-400 bg-orange-500/20 text-orange-100"
-                            : "border-slate-700 bg-slate-900/80 text-slate-200"
-                        }`}
-                        style={{
-                          left: row.tSec * visualPxPerSec,
-                          width,
-                        }}
-                      >
-                        <span className="line-clamp-2">{row.text}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+              
               <div
                 ref={waveformWrapperRef}
-                className="relative mt-6 rounded-xl border border-slate-800 bg-slate-950/60 px-0 py-3"
+                className="relative mt-3 rounded-xl border border-slate-800 bg-slate-950/60 px-0 py-2"
                 style={{ width: timelineTotalWidth }}
               >
                 <div
@@ -772,7 +847,7 @@ export default function TimelineEditor({
                     waveRef.current?.setTime(nextTime);
                     setCurrentTime(nextTime);
                     setSelectedTime(nextTime);
-                    const idx = clips.findIndex(
+                    const idx = displayClips.findIndex(
                       (clip) => nextTime >= clip.start && nextTime <= clip.end,
                     );
                     setActiveClipIndex(idx >= 0 ? idx : null);
@@ -809,15 +884,15 @@ export default function TimelineEditor({
                     style={{ left: clip.start * visualPxPerSec }}
                   />
                 ))}
+                <div
+                  className="pointer-events-none absolute inset-y-0 z-40 w-[2px] bg-orange-400/80"
+                  style={{
+                    left:
+                      (isPlaying ? currentTime : selectedTime ?? currentTime) *
+                      visualPxPerSec,
+                  }}
+                />
               </div>
-              <div
-                className="pointer-events-none absolute top-0 z-40 h-full w-[2px] bg-orange-400/80"
-                style={{
-                  left:
-                    (isPlaying ? currentTime : selectedTime ?? currentTime) *
-                    visualPxPerSec,
-                }}
-              />
             </div>
           </div>
         </div>
@@ -855,11 +930,11 @@ export default function TimelineEditor({
           className="mt-4 w-full max-w-full overflow-x-auto"
         >
           <div
-            className="relative min-h-[220px] max-w-full"
+            className="relative min-h-[160px] max-w-full"
             style={{ width: editedTimelineTotalWidth }}
           >
             <div className="absolute left-0 top-0 h-full w-full">
-              <div className="relative h-10 text-xs text-slate-400">
+              <div className="relative h-8 text-xs text-slate-400">
                 {Array.from(
                   { length: Math.ceil(editedDuration / 5) + 1 },
                   (_, idx) => idx * 5,
@@ -875,7 +950,7 @@ export default function TimelineEditor({
               </div>
               <div
                 ref={editedWrapperRef}
-                className="relative mt-6 rounded-xl border border-slate-800 bg-slate-950/60 px-0 py-3"
+                className="relative mt-3 rounded-xl border border-slate-800 bg-slate-950/60 px-0 py-2"
                 style={{ width: editedTimelineTotalWidth }}
               >
                 <div
@@ -904,7 +979,7 @@ export default function TimelineEditor({
                 />
               </div>
               <div
-                className="pointer-events-none absolute top-0 z-40 h-full w-[2px] bg-emerald-400/80"
+                className="pointer-events-none absolute inset-y-0 z-40 w-[2px] bg-emerald-400/80"
                 style={{
                   left: editedTime * editedPxPerSec,
                 }}

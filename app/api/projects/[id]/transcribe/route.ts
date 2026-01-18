@@ -51,8 +51,8 @@ const resolveExt = (url: string, contentType?: string | null) => {
 };
 
 async function ensureLocalAudioPath(url: string) {
-  if (url.startsWith("/")) {
-    const localPath = path.join(process.cwd(), "public", url);
+  const toLocalPath = async (pathname: string) => {
+    const localPath = path.join(process.cwd(), "public", pathname);
     const stats = await fs.stat(localPath);
     const ext = path.extname(localPath).toLowerCase();
     return {
@@ -60,7 +60,21 @@ async function ensureLocalAudioPath(url: string) {
       size: stats.size,
       mime: ext ? `audio/${ext.replace(".", "")}` : "audio/mpeg",
     };
+  };
+
+  if (url.startsWith("/")) {
+    return toLocalPath(url);
   }
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname.startsWith("/uploads/")) {
+      return await toLocalPath(parsed.pathname);
+    }
+  } catch {
+    // Fall through to fetch.
+  }
+
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error("Failed to download audio");
@@ -107,9 +121,9 @@ export async function POST(
     include: { audioAsset: true },
   });
   const correlationId = randomUUID();
-  if (!project || !project.audioAsset?.originalUrl) {
+  if (!project || !project.audioAsset?.editedUrl) {
     return NextResponse.json(
-      { error: "Missing audio", correlationId },
+      { error: "Missing edited audio", correlationId },
       { status: 400 },
     );
   }
@@ -123,9 +137,9 @@ export async function POST(
   publishProjectEvent(project.id, { message: "Transcription queued" });
 
   try {
-    const audioFile = await ensureLocalAudioPath(project.audioAsset.originalUrl);
+    const audioFile = await ensureLocalAudioPath(project.audioAsset.editedUrl);
     console.log(
-      `[transcribe:${correlationId}] project=${project.id} audio=${project.audioAsset.originalUrl} size=${audioFile.size} mime=${audioFile.mime}`,
+      `[transcribe:${correlationId}] project=${project.id} audio=${project.audioAsset.editedUrl} size=${audioFile.size} mime=${audioFile.mime}`,
     );
     console.log(`[transcribe:${correlationId}] OpenAI start`);
     const transcript = await openai.audio.transcriptions.create({
@@ -141,48 +155,11 @@ export async function POST(
     console.log(
       `[transcribe:${correlationId}] words=${words.length} segments=${segments.length}`,
     );
-    const rawClips =
-      requestedClips.length > 0
-        ? requestedClips
-        : (project.audioAsset?.waveformData as { clips?: Array<{ start: number; end: number }> } | null)
-            ?.clips ?? [];
-    const clips = rawClips
-      .filter((clip) => clip.end > clip.start)
-      .sort((a, b) => a.start - b.start);
-    const remapTime = (tSec: number) => {
-      if (!clips.length) return tSec;
-      let offset = 0;
-      for (const clip of clips) {
-        if (tSec < clip.start) {
-          return null;
-        }
-        if (tSec >= clip.start && tSec <= clip.end) {
-          return tSec - clip.start + offset;
-        }
-        offset += clip.end - clip.start;
-      }
-      return null;
-    };
     const { rowsSource, rowsAreMapped } = (() => {
       if (words.length === 0) {
         return { rowsSource: quantizeSegmentsToRows(segments), rowsAreMapped: false };
       }
-      if (!clips.length) {
-        return { rowsSource: quantizeWordsToRows(words), rowsAreMapped: false };
-      }
-      const remappedWords = words
-        .map((token) => {
-          const mappedStart = remapTime(token.start);
-          if (mappedStart == null) return null;
-          const mappedEnd = remapTime(token.end) ?? mappedStart;
-          return {
-            ...token,
-            start: mappedStart,
-            end: Math.max(mappedStart, mappedEnd),
-          };
-        })
-        .filter(Boolean) as typeof words;
-      return { rowsSource: quantizeWordsToRows(remappedWords), rowsAreMapped: true };
+      return { rowsSource: quantizeWordsToRows(words), rowsAreMapped: false };
     })();
     if (rowsSource.length === 0 && transcript.text) {
       console.warn(
@@ -190,18 +167,13 @@ export async function POST(
       );
       rowsSource.push({ tSec: 0, text: transcript.text });
     }
-    const rows = rowsSource
-      .map((row) => {
-        const mapped = rowsAreMapped ? row.tSec : remapTime(row.tSec);
-        if (mapped == null) return null;
-        return {
-          projectId: project.id,
-          tSec: mapped,
-          text: row.text,
-          words: row.words ?? undefined,
-        };
-      })
-      .filter(Boolean) as Array<{
+  const rows = rowsSource
+      .map((row) => ({
+        projectId: project.id,
+        tSec: row.tSec,
+        text: row.text,
+        words: row.words ?? undefined,
+      })) as Array<{
       projectId: string;
       tSec: number;
       text: string;
@@ -223,13 +195,48 @@ export async function POST(
       }, new Map<number, { projectId: string; tSec: number; text: string; words?: unknown }>()),
     ).map(([, value]) => value);
 
+    const clipDurationSec = (() => {
+      if (requestedClips.length) {
+        return requestedClips.reduce(
+          (sum, clip) => sum + (clip.end - clip.start),
+          0,
+        );
+      }
+      const storedClips = project.audioAsset?.waveformData as
+        | { clips?: Array<{ start: number; end: number }> }
+        | undefined;
+      if (storedClips?.clips?.length) {
+        return storedClips.clips.reduce(
+          (sum, clip) => sum + (clip.end - clip.start),
+          0,
+        );
+      }
+      return project.audioAsset?.durationSec ?? 0;
+    })();
+    const maxSecond = Math.max(0, Math.ceil(clipDurationSec) - 1);
+    const rowsBySecond = new Map<number, (typeof dedupedRows)[number]>();
+    dedupedRows.forEach((row) => rowsBySecond.set(row.tSec, row));
+    const fullRows =
+      maxSecond > 0
+        ? Array.from({ length: maxSecond + 1 }).map((_, idx) => {
+            const existing = rowsBySecond.get(idx);
+            return (
+              existing ?? {
+                projectId: project.id,
+                tSec: idx,
+                text: "",
+              }
+            );
+          })
+        : dedupedRows;
+
     await prisma.$transaction([
       prisma.transcriptRow.deleteMany({ where: { projectId: project.id } }),
       prisma.project.update({
         where: { id: project.id },
         data: { transcriptRaw: transcript as unknown as object },
       }),
-      prisma.transcriptRow.createMany({ data: dedupedRows }),
+      prisma.transcriptRow.createMany({ data: fullRows }),
     ]);
 
     publishProjectEvent(project.id, { message: "Transcription ready" });
@@ -237,7 +244,7 @@ export async function POST(
     return NextResponse.json({
       ok: true,
       correlationId,
-      rows: dedupedRows,
+      rows: fullRows,
     });
   } catch (error) {
     publishProjectEvent(project.id, { message: "Transcription failed" });

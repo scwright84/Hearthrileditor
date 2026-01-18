@@ -22,8 +22,6 @@ export async function POST(
       project: {
         include: {
           characters: { include: { omniRefs: true } },
-          stylePack: { include: { styleRefs: true } },
-          styleRefs: true,
         },
       },
     },
@@ -84,24 +82,6 @@ export async function POST(
     });
     runId = run.id;
 
-    const packRefs =
-      scene.project.stylePack?.styleRefs ??
-      (scene.project.styleRefs.length > 0 ? scene.project.styleRefs : []);
-    const styleRefs = packRefs
-      .map((ref) => ({
-        url: toPublicAssetUrl(ref.imageUrl),
-        weight: ref.weight ?? 0.8,
-      }))
-      .filter(
-        (ref): ref is { url: string; weight: number } => Boolean(ref.url),
-      );
-    if (packRefs.length > 0 && styleRefs.length === 0) {
-      return NextResponse.json(
-        { error: "Style references must be publicly accessible. Re-upload." },
-        { status: 400 },
-      );
-    }
-
     let characterRef: Record<string, { images: string[] }> | undefined;
     if (character) {
       const images = getCharacterHeadshotUrls(character);
@@ -136,7 +116,6 @@ export async function POST(
           prompt: scene.promptText,
           model: "photon-flash-1",
           aspect_ratio: "16:9",
-          style_ref: styleRefs.length ? styleRefs : undefined,
           character_ref: characterRef,
         });
         const status = mapLumaStateToJobStatus(generation.state);

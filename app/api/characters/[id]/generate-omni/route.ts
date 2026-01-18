@@ -7,10 +7,8 @@ import {
   mapLumaStateToJobStatus,
 } from "@/lib/lumaClient";
 import { publishProjectEvent } from "@/lib/events";
-import { toPublicAssetUrl } from "@/lib/publicAssetUrl";
 import { buildOmniPrompt } from "@/lib/omniPrompt";
 
-const USE_STYLE_PACK_REFS = process.env.USE_STYLE_PACK_REFS === "true";
 const MAX_OMNI_PROMPT_CHARS = 700;
 const clampPrompt = (prompt: string) => {
   if (prompt.length <= MAX_OMNI_PROMPT_CHARS) {
@@ -48,8 +46,6 @@ export async function POST(
       omniRefs: true,
       project: {
         include: {
-          stylePack: { include: { styleRefs: true } },
-          styleRefs: true,
           characters: true,
           animationStyle: true,
         },
@@ -104,45 +100,11 @@ export async function POST(
   });
 
   try {
-    const limitedStyleRefs = USE_STYLE_PACK_REFS
-      ? (() => {
-          const packRefs =
-            character.project.stylePack?.styleRefs ??
-            (character.project.styleRefs.length > 0
-              ? character.project.styleRefs
-              : []);
-          const styleRefs = packRefs
-            .map((ref) => ({
-              url: toPublicAssetUrl(ref.imageUrl),
-              weight: ref.weight ?? 0.8,
-            }))
-            .filter(
-              (ref): ref is { url: string; weight: number } => Boolean(ref.url),
-            );
-          if (packRefs.length > 0 && styleRefs.length === 0) {
-            return "error" as const;
-          }
-          return styleRefs
-            .sort((a, b) => (b.weight ?? 0.8) - (a.weight ?? 0.8))
-            .slice(0, 1);
-        })()
-      : [];
-
-    if (limitedStyleRefs === "error") {
-      return NextResponse.json(
-        { error: "Style references must be publicly accessible. Re-upload." },
-        { status: 400 },
-      );
-    }
-
     console.log("Luma omni request", {
       characterId: character.id,
       stylePresetId,
       mode: "prompt-only",
-      styleRefUrls:
-        limitedStyleRefs === "error"
-          ? []
-          : limitedStyleRefs.map((ref) => ref.url),
+      styleRefUrls: [],
       promptLength: promptText.length,
       promptTruncated: truncated,
     });

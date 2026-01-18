@@ -41,10 +41,54 @@ export async function GET() {
         defaultCategories: style.default_categories,
         description: style.description,
         mjStyleModifier: style.mj_style_modifier ?? null,
+        referenceImageUrl: style.reference_image_url ?? null,
       })),
       skipDuplicates: true,
     });
   }
+
+  await Promise.all(
+    ANIMATION_STYLES_CATALOG.map((style) =>
+      prisma.animationStyle.updateMany({
+        where: {
+          id: style.id,
+          ownerUserId: session.user.id,
+          OR: [{ referenceImageUrl: null }, { referenceImageUrl: "" }],
+        },
+        data: {
+          ...(style.reference_image_url
+            ? { referenceImageUrl: style.reference_image_url }
+            : {}),
+        },
+      }),
+    ),
+  );
+
+  await Promise.all(
+    ANIMATION_STYLES_CATALOG.map((style) =>
+      prisma.animationStyle.updateMany({
+        where: {
+          id: style.id,
+          ownerUserId: session.user.id,
+          OR: [{ promptInput: null }, { promptInput: "" }],
+        },
+        data: style.description ? { promptInput: style.description } : {},
+      }),
+    ),
+  );
+
+  await Promise.all(
+    ANIMATION_STYLES_CATALOG.map((style) =>
+      prisma.animationStyle.updateMany({
+        where: {
+          id: style.id,
+          ownerUserId: session.user.id,
+          OR: [{ stylePrompt: null }, { stylePrompt: "" }],
+        },
+        data: style.description ? { stylePrompt: style.description } : {},
+      }),
+    ),
+  );
 
   const styles = await prisma.animationStyle.findMany({
     where: { ownerUserId: session.user.id },

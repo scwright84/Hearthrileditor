@@ -7,10 +7,8 @@ import {
   getOmniVariantCount,
   mapLumaStateToJobStatus,
 } from "@/lib/lumaClient";
-import { toPublicAssetUrl } from "@/lib/publicAssetUrl";
 import { buildOmniPrompt } from "@/lib/omniPrompt";
 
-const USE_STYLE_PACK_REFS = process.env.USE_STYLE_PACK_REFS === "true";
 const MAX_OMNI_PROMPT_CHARS = 700;
 const clampPrompt = (prompt: string) => {
   if (prompt.length <= MAX_OMNI_PROMPT_CHARS) {
@@ -42,8 +40,6 @@ export async function POST(request: Request) {
     where: { id: projectId, userId: session.user.id },
     include: {
       characters: true,
-      stylePack: { include: { styleRefs: true } },
-      styleRefs: true,
       animationStyle: true,
     },
   });
@@ -56,35 +52,6 @@ export async function POST(request: Request) {
   });
   if (!stylePreset) {
     return NextResponse.json({ error: "Style preset missing" }, { status: 400 });
-  }
-
-  const limitedStyleRefs = USE_STYLE_PACK_REFS
-    ? (() => {
-        const packRefs =
-          project.stylePack?.styleRefs ??
-          (project.styleRefs.length > 0 ? project.styleRefs : []);
-        const styleRefs = packRefs
-          .map((ref) => ({
-            url: toPublicAssetUrl(ref.imageUrl),
-            weight: ref.weight ?? 0.8,
-          }))
-          .filter(
-            (ref): ref is { url: string; weight: number } => Boolean(ref.url),
-          );
-        if (packRefs.length > 0 && styleRefs.length === 0) {
-          return "error" as const;
-        }
-        return styleRefs
-          .sort((a, b) => (b.weight ?? 0.8) - (a.weight ?? 0.8))
-          .slice(0, 1);
-      })()
-    : [];
-
-  if (limitedStyleRefs === "error") {
-    return NextResponse.json(
-      { error: "Style references must be publicly accessible. Re-upload." },
-      { status: 400 },
-    );
   }
 
   let completed = 0;
@@ -150,7 +117,7 @@ export async function POST(request: Request) {
         characterId: character.id,
         stylePresetId,
         mode: "prompt-only",
-        styleRefUrls: limitedStyleRefs.map((ref) => ref.url),
+        styleRefUrls: [],
         promptLength: promptText.length,
         promptTruncated: truncated,
       });
@@ -159,23 +126,24 @@ export async function POST(request: Request) {
         Array.from({ length: variantCount }).map(async (_value, index) => {
           const modelUsed = "photon-flash-1";
           const aspectRatio = "3:4";
-        const generation = await createImageGeneration({
-          prompt: promptText,
-          model: modelUsed,
-          aspect_ratio: aspectRatio,
-          style_ref: undefined,
-        });
+          const generation = await createImageGeneration({
+            prompt: promptText,
+            model: modelUsed,
+            aspect_ratio: aspectRatio,
+            style_ref: undefined,
+          });
           const status = mapLumaStateToJobStatus(generation.state);
           return prisma.characterOmniVariant.create({
-          data: {
-            characterId: character.id,
-            stylePresetId,
-            omniRefId: omniRef.id,
-            index,
-            status,
-            imageUrl: status === "ready" ? generation.assets?.image ?? null : null,
-            lumaGenerationId: generation.id,
-            promptUsed: promptText,
+            data: {
+              characterId: character.id,
+              stylePresetId,
+              omniRefId: omniRef.id,
+              index,
+              status,
+              imageUrl:
+                status === "ready" ? generation.assets?.image ?? null : null,
+              lumaGenerationId: generation.id,
+              promptUsed: promptText,
               modelUsed,
               aspectRatio,
             },

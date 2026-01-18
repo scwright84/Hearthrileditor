@@ -35,12 +35,6 @@ export default async function ProjectEditPage({
           omniVariants: { orderBy: { createdAt: "asc" } },
         },
       },
-      stylePreset: true,
-      stylePack: {
-        include: {
-          styleRefs: { orderBy: { createdAt: "asc" } },
-        },
-      },
       animationStyle: true,
     },
   });
@@ -49,9 +43,5 @@ export default async function ProjectEditPage({
     redirect("/projects");
   }
 
-  const stylePresets = await prisma.stylePreset.findMany({
-    orderBy: { name: "asc" },
-  });
-
-  return <ProjectEditor project={project} stylePresets={stylePresets} />;
+  return <ProjectEditor project={project} />;
 }

@@ -5,7 +5,7 @@ import { publishProjectEvent } from "@/lib/events";
 import { createVideoGeneration, mapLumaStateToJobStatus } from "@/lib/lumaClient";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: { id: string } },
 ) {
   const session = await getAuthSession();
@@ -31,8 +31,11 @@ export async function POST(
       );
     }
 
+    const body = await request.json().catch(() => ({}));
+    const usePrompt =
+      typeof body?.usePrompt === "boolean" ? body.usePrompt : true;
     const generation = await createVideoGeneration({
-      prompt: candidate.scene.promptText,
+      prompt: usePrompt ? candidate.scene.promptText : undefined,
       model: "ray-flash-2",
       resolution: "720p",
       duration: "5s",

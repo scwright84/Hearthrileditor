@@ -126,32 +126,41 @@ export default function AnimationStylesManager() {
             Projects
           </Link>
           <Link
-            href="/style-packs"
-            className="text-sm font-medium text-slate-300 hover:text-white"
-          >
-            Style Packs
-          </Link>
-          <Link
             href="/animation-styles"
             className="text-sm font-medium text-slate-100 underline underline-offset-4"
           >
-            Animation Styles
+            Animation Library
           </Link>
         </aside>
 
         <div className="flex w-full flex-col gap-8">
           <header className="flex flex-col gap-6">
-            <div>
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <h1 className="text-4xl font-semibold tracking-tight text-slate-100">
-                Animation Styles
+                Animation Library
               </h1>
-            </div>
-            <div className="flex w-full items-center">
-              <p className="text-sm text-slate-400">
-                Your 20 default animation styles are preloaded. Edit descriptions
-                below as needed.
-                {!hasCatalog ? " (Loading…)" : ""}
-              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={!styles.length}
+                  onClick={() => {
+                    const lines = styles
+                      .map((style) => {
+                        const prompt = style.stylePrompt?.trim();
+                        if (!prompt) return null;
+                        return `${style.brandedName}: ${prompt}`;
+                      })
+                      .filter(Boolean)
+                      .join("\n\n");
+                    if (lines) {
+                      navigator.clipboard.writeText(lines);
+                    }
+                  }}
+                >
+                  Copy All Prompts
+                </Button>
+              </div>
             </div>
           </header>
 
@@ -369,9 +378,23 @@ export default function AnimationStylesManager() {
                           </div>
                         </div>
                         <div className="flex flex-col gap-2">
-                          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                            Style Prompt
-                          </p>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                              Style Prompt
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={!style.stylePrompt}
+                              onClick={() => {
+                                if (style.stylePrompt) {
+                                  navigator.clipboard.writeText(style.stylePrompt);
+                                }
+                              }}
+                            >
+                              Copy Prompt
+                            </Button>
+                          </div>
                           <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
                             {style.stylePrompt ||
                               "Generate Style Prompt to create the reference prompt."}

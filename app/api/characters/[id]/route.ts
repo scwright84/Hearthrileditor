@@ -42,3 +42,39 @@ export async function PATCH(
 
   return NextResponse.json(updated);
 }
+
+export async function DELETE(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const session = await getAuthSession();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id } = await params;
+  const character = await prisma.characterReference.findFirst({
+    where: { id, project: { userId: session.user.id } },
+  });
+  if (!character) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  await prisma.$transaction([
+    prisma.scene.updateMany({
+      where: { characterRefId: character.id },
+      data: { characterRefId: null },
+    }),
+    prisma.characterOmniVariant.deleteMany({
+      where: { characterId: character.id },
+    }),
+    prisma.characterOmniRef.deleteMany({
+      where: { characterId: character.id },
+    }),
+    prisma.characterReference.delete({
+      where: { id: character.id },
+    }),
+  ]);
+
+  return NextResponse.json({ ok: true });
+}

@@ -32,16 +32,10 @@ export default function ProjectList({ projects }: { projects: Project[] }) {
             Projects
           </Link>
           <Link
-            href="/style-packs"
-            className="text-sm font-medium text-slate-300 hover:text-slate-100"
-          >
-            Style Packs
-          </Link>
-          <Link
             href="/animation-styles"
             className="text-sm font-medium text-slate-300 hover:text-slate-100"
           >
-            Animation Styles
+            Animation Library
           </Link>
         </aside>
 

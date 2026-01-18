@@ -19,10 +19,27 @@ export async function PATCH(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  const nextStartMs =
+    typeof body.startMs === "number" && Number.isFinite(body.startMs)
+      ? Math.max(0, Math.floor(body.startMs))
+      : scene.startMs;
+  const nextEndMs =
+    typeof body.endMs === "number" && Number.isFinite(body.endMs)
+      ? Math.max(0, Math.floor(body.endMs))
+      : scene.endMs;
+  if (nextEndMs <= nextStartMs) {
+    return NextResponse.json(
+      { error: "endMs must be greater than startMs" },
+      { status: 400 },
+    );
+  }
+
   const updated = await prisma.scene.update({
     where: { id: params.id },
     data: {
       promptText: typeof body.promptText === "string" ? body.promptText : scene.promptText,
+      startMs: nextStartMs,
+      endMs: nextEndMs,
     },
   });
 

@@ -4,10 +4,9 @@ import { prisma } from "@/lib/db";
 import { openai } from "@/lib/openai";
 import { getCharacterHeadshotUrl } from "@/lib/characters";
 import { buildOmniPrompt } from "@/lib/omniPrompt";
+import { buildAnimationStylePrompt } from "@/lib/animationStyle";
 import fs from "fs/promises";
 import path from "path";
-
-const USE_STYLE_PACK_REFS = process.env.USE_STYLE_PACK_REFS === "true";
 
 const mimeForPath = (filePath: string) => {
   const ext = path.extname(filePath).toLowerCase();
@@ -60,7 +59,6 @@ export async function POST(
     include: {
       project: {
         include: {
-          stylePack: { include: { styleRefs: true } },
           animationStyle: true,
         },
       },
@@ -74,6 +72,15 @@ export async function POST(
   if (!headshotUrl) {
     return NextResponse.json({ error: "Headshot required" }, { status: 400 });
   }
+
+  const animationStyleText =
+    character.project.animationStyle?.stylePrompt ??
+    character.project.animationStyle?.description ??
+    null;
+  const styleClause = buildAnimationStylePrompt(
+    animationStyleText,
+    character.project.animationStyle?.mjStyleModifier ?? null,
+  );
 
   let dataUrl: string | null = null;
   try {
@@ -99,26 +106,6 @@ export async function POST(
     }
   }
 
-  const styleDataUrls = USE_STYLE_PACK_REFS
-    ? (
-        await Promise.all(
-          (character.project.stylePack?.styleRefs ?? [])
-            .slice(0, 3)
-            .map(async (ref) => {
-              try {
-                const { buffer, contentType } = await readHeadshotBuffer(
-                  ref.imageUrl,
-                );
-                const base64 = buffer.toString("base64");
-                return `data:${contentType};base64,${base64}`;
-              } catch {
-                return null;
-              }
-            }),
-        )
-      ).filter((url): url is string => Boolean(url))
-    : [];
-
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
     response_format: { type: "json_object" },
@@ -133,9 +120,17 @@ export async function POST(
         content: [
           {
             type: "text",
-            text: USE_STYLE_PACK_REFS
-              ? "Create a character reference prompt for Luma/Midjourney using the headshot and style references. The prompt must be specific to the subject's likeness (age/life stage, ancestry/skin tone, eyes, nose, mouth/lips, face shape, hair/fur, expression). Extract 4-8 concrete style adjectives from the style reference image and include them. Return JSON."
-              : "Create a character reference prompt for Luma/Midjourney using the headshot and the animation style reference image. The prompt must be specific to the subject's likeness (age/life stage, ancestry/skin tone, eyes, nose, mouth/lips, face shape, hair/fur, expression). Extract 4-8 concrete style adjectives from the style reference image and include them. Return JSON.",
+            text: [
+              "Create a character reference prompt for Luma/Midjourney using the headshot and the animation style reference image.",
+              "The prompt must be specific to the subject's likeness (age/life stage, ancestry/skin tone, eyes, nose, mouth/lips, face shape, hair/fur, expression).",
+              "Extract 4-8 concrete style adjectives from the style reference image and include them.",
+              styleClause
+                ? `Animation style notes: ${styleClause}.`
+                : null,
+              "Return JSON.",
+            ]
+              .filter(Boolean)
+              .join(" "),
           },
           ...(styleRefDataUrl
             ? [
@@ -149,10 +144,6 @@ export async function POST(
             type: "image_url",
             image_url: { url: dataUrl },
           },
-          ...styleDataUrls.map((url) => ({
-            type: "image_url" as const,
-            image_url: { url },
-          })),
         ],
       },
     ],
@@ -347,7 +338,7 @@ export async function POST(
         character.project.animationStyle?.description ??
         null;
 
-  const descriptionPrompt = finalPrompt
+  let descriptionPrompt = finalPrompt
     ? finalPrompt
     : buildOmniPrompt(
         character.name,
@@ -356,6 +347,11 @@ export async function POST(
         character.project.animationStyle?.mjStyleModifier ?? null,
         subjectType,
       );
+
+  if (styleClause && !descriptionPrompt.toLowerCase().includes("animation style")) {
+    const trimmed = descriptionPrompt.replace(/\.*\s*$/, "");
+    descriptionPrompt = `${trimmed}. Animation style: ${styleClause}.`;
+  }
   const updated = await prisma.characterReference.update({
     where: { id: character.id },
     data: { descriptionPrompt },

@@ -44,7 +44,6 @@ model User {
   updatedAt DateTime @updatedAt
 
   projects  Project[]
-  stylePacks StylePack[] @relation("UserStylePacks")
   animationStyles AnimationStyle[] @relation("UserAnimationStyles")
   accounts  Account[]
   sessions  Session[]
@@ -54,8 +53,8 @@ model Project {
   id            String   @id @default(cuid())
   userId        String
   title         String
+  setting       String?
   stylePresetId String?
-  stylePackId   String?  @unique
   animationStyleId String?
   transcriptRaw Json?
   createdAt     DateTime @default(now())
@@ -63,15 +62,12 @@ model Project {
 
   user          User              @relation(fields: [userId], references: [id])
   stylePreset   StylePreset?      @relation(fields: [stylePresetId], references: [id])
-  stylePack     StylePack?        @relation("ProjectActiveStylePack", fields: [stylePackId], references: [id])
   animationStyle AnimationStyle?  @relation(fields: [animationStyleId], references: [id])
   audioAsset    AudioAsset?
   transcript   TranscriptRow[]
   scenes       Scene[]
   exports      ExportRender[]
   characters   CharacterReference[]
-  stylePacks   StylePack[]        @relation("ProjectStylePacks")
-  styleRefs    StyleRef[]
 
   @@index([userId])
   @@index([animationStyleId])
@@ -279,25 +275,6 @@ model CharacterOmniRef {
   @@index([stylePresetId])
 }
 
-model StylePack {
-  id           String   @id @default(cuid())
-  projectId    String?
-  ownerUserId  String?
-  name         String
-  isGlobal     Boolean  @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  project      Project? @relation("ProjectStylePacks", fields: [projectId], references: [id])
-  activeFor    Project? @relation("ProjectActiveStylePack")
-  owner        User?    @relation("UserStylePacks", fields: [ownerUserId], references: [id])
-  styleRefs    StyleRef[]
-
-  @@index([projectId])
-  @@index([ownerUserId])
-  @@index([isGlobal])
-}
-
 model AnimationStyle {
   id           String   @id @default(cuid())
   ownerUserId  String?
@@ -338,23 +315,6 @@ model AnimationStyleVariant {
   animationStyle AnimationStyle @relation(fields: [animationStyleId], references: [id])
 
   @@index([animationStyleId])
-}
-
-model StyleRef {
-  id         String   @id @default(cuid())
-  projectId  String?
-  stylePackId String?
-  name       String?
-  imageUrl   String
-  weight     Float   @default(0.8)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  project    Project?  @relation(fields: [projectId], references: [id])
-  stylePack  StylePack? @relation(fields: [stylePackId], references: [id])
-
-  @@index([projectId])
-  @@index([stylePackId])
 }
 
 model Account {

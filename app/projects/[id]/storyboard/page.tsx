@@ -19,29 +19,7 @@ export default async function ProjectStoryboardPage({
     include: {
       audioAsset: true,
       transcript: { orderBy: { tSec: "asc" } },
-      scenes: {
-        orderBy: { index: "asc" },
-        include: {
-          imageCandidates: {
-            where: { run: { isActive: true } },
-            orderBy: { createdAt: "asc" },
-          },
-          animationClips: { orderBy: { createdAt: "asc" } },
-        },
-      },
-      characters: {
-        include: {
-          omniRefs: true,
-          omniVariants: { orderBy: { createdAt: "asc" } },
-        },
-      },
-      stylePreset: true,
-      stylePack: {
-        include: {
-          styleRefs: { orderBy: { createdAt: "asc" } },
-        },
-      },
-      animationStyle: true,
+      characters: true,
     },
   });
 
